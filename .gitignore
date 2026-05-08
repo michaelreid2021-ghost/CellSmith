@@ -1,6 +1,7 @@
 # CellSmith local brag log + patch backups
 patch_telemetry.jsonl
 *.bak
+previous_patches/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

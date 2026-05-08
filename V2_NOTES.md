@@ -20,6 +20,33 @@ Stuff deliberately punted from v1. Add to as you go.
 
 - **Weekly resets / seasons.** Top 50 all-time + top 10 this week.
 
+## Versioning / mini-state / `--accept`
+
+Today's `rollback` reverts a single `.bak`. That breaks down for the realistic
+LLM workflow: you submit patch A, the LLM submits patch B that fixes a bug
+*introduced by* patch A, then patch C which is a polish pass. Rolling back
+just C leaves you with B's mid-fix state — useless.
+
+**v2 design (sketch):**
+
+- Replace `*.bak` with a per-file **revision stack** under
+  `.cellsmith/state/<file-hash>/v0001`, `v0002`, ... — never overwritten.
+- `cellsmith patch p.json` pushes a new revision onto every touched file's
+  stack and writes a **session manifest** (`.cellsmith/sessions/<ts>.json`)
+  recording which patch JSON produced which revisions.
+- `cellsmith rollback` reverts the **current session** (all files together),
+  not a single file.
+- `cellsmith accept` locks in the current chain — collapses the revision
+  stack into a single committed snapshot and prunes prior revisions for
+  those files. Optional flag `--squash N` to keep the last N revisions
+  before the accept point.
+- `cellsmith log <file>` shows the revision stack + session it came from
+  (like `git log` for a single file's patch history).
+- `cellsmith diff <fileA> --rev v0003` to inspect any prior revision.
+
+This makes the LLM-iterative loop sane: you can accept *the series* once
+the final patch resolves, not gamble on a single rollback.
+
 ## Annotate
 
 - **Multi-language patching.** `markup.py` handles Python AST. JSON / TOML

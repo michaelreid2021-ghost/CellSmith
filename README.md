@@ -7,6 +7,75 @@ CellSmith annotates a Python file with Jupyter-flavored cell markers
 `# %% [knobs:*:start]` zones) so an LLM can return surgical JSON patches
 against named cells instead of rewriting whole files.
 
+## Why this exists
+
+If you've ever pasted a 600-line Python file into a chat UI and asked an LLM
+to "just change the `validate()` method," you've watched it dutifully echo
+back all 600 lines — burning tokens, mangling unrelated bits, and forcing you
+to diff the result by eye. The model wasn't being lazy; you didn't give it a
+way to be precise.
+
+CellSmith gives the model that vocabulary. The annotated file shows it a
+**skeleton** — every function, method, class, and `[imports]` block tagged
+with a stable `cell_id`. The model returns a tiny JSON like:
+
+```json
+{
+  "revisions": [
+    {"filename": "auth.py", "revision_type": "CELL_PATCH",
+     "cell_id": "method:UserService.validate",
+     "code_content": "# %% [method:UserService.validate]\n    def validate(self, ...):\n        ..."}
+  ]
+}
+```
+
+…and CellSmith splices it in. The rest of the file is never re-emitted, never
+re-tokenized, never at risk.
+
+### Real workloads it's already chewed through
+
+These are real single-shot LLM outputs that landed cleanly via `cellsmith patch`:
+
+| Payload | Size | Revisions | Tools | Files | Notes |
+|---|---|---|---|---|---|
+| `patch_tuesday.json` | **98 KB** | 9 | 8× CELL_PATCH + 1× REPLACE | 2 | **Gemini Pro single-shot via the chat UI.** No agent, no SDK loop — just paste-and-go. |
+| `big_patch.json` | 40 KB | **74** | 73× CELL_PATCH + 1× REPLACE | 3 | One model, one prompt, 74 surgical edits across three files. |
+| `patch_1.json` | 16 KB | 14 | 14× CELL_PATCH | 2 | Typical iterative session. |
+
+You don't need an agent framework to get this leverage. You need a vocabulary
+the model can speak fluently, and a tool boring enough not to fight you.
+
+### Use cases
+
+- **Big-codebase chat-UI editing.** Pile up your project's annotated files in
+  one prompt; let the model return one JSON; apply it locally. No API plumbing.
+- **Local / small-model workflows.** A 4B model on MLX or llama.cpp can land
+  surgical CELL_PATCH ops if it doesn't have to re-emit context. Density beats
+  parameter count when the tool is shaped right.
+- **Multi-file refactors in one shot.** Rename a method across three files,
+  add a new helper, tweak a constant — one JSON, one apply, one rollback if
+  it breaks.
+- **Beyond Python.** Annotation is Python-only today, but `REPLACE` works on
+  any file (JSON, TOML, Markdown, configs), so an LLM can drop an entirely new
+  `pyproject.toml` or rewrite a `schema.json` in the same payload.
+
+## Why a leaderboard?
+
+Because this is the kind of tooling whose ceiling is set by **prompting and
+model choice**, not by the framework. There's no "official" right way to
+prompt an LLM into landing a 74-revision payload — and the surprising answers
+(maybe a 4B local model with a clever skeleton trick beats a frontier model
+with a lazy prompt) are the *interesting* answers.
+
+The leaderboard makes those answers visible. The scoring is intentionally
+passive (the LLM never sees the metric — see `src/cellsmith/telemetry.py`
+docstring, then re-read [Goodhart](https://en.wikipedia.org/wiki/Goodhart%27s_law)
+and never tell it). What gets ranked is what the human + model pair actually
+landed: how dense, how surgical, against how much input context.
+
+If a 4B model with a hand-crafted skeleton tops `patch_tuesday.json`'s score,
+that's worth knowing. If frontier models always win, that's worth knowing too.
+
 ## Install
 
 ```bash
