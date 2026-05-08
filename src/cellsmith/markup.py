@@ -234,6 +234,56 @@ def apply_revisions(data: dict, target_dir: Path) -> None:
             logging.info(f"Appended new cell to {target_file}")
             telemetry.record(telemetry.score_patch(code, "CELL_CREATE"), file=str(target_file), cell_id=rev.get("cell_id"))
 
+def _load_gitignore(root: Path):
+    """Return a pathspec.PathSpec built from <root>/.gitignore, or None."""
+    gi = root / ".gitignore"
+    if not gi.exists():
+        return None
+    try:
+        import pathspec
+    except ImportError:
+        logging.warning("pathspec not installed; skipping .gitignore filtering")
+        return None
+    with open(gi, "r", encoding="utf-8") as f:
+        return pathspec.PathSpec.from_lines("gitwildmatch", f.readlines())
+
+
+def iter_python_files(
+    target: Path,
+    *,
+    use_gitignore: bool = True,
+    include_hidden: bool = False,
+) -> List[Path]:
+    """Walk `target`, yielding Python files to annotate.
+
+    Skips dotted dirs/files (.git, .venv, ...) and dunder dirs (__pycache__, ...)
+    by default, and honors the nearest .gitignore at `target` if present.
+    """
+    if target.is_file():
+        return [target] if target.suffix == ".py" else []
+
+    spec = _load_gitignore(target) if use_gitignore else None
+    results: List[Path] = []
+
+    for path in target.rglob("*"):
+        if path.is_dir():
+            continue
+        rel = path.relative_to(target)
+        parts = rel.parts
+
+        if not include_hidden and any(p.startswith(".") for p in parts):
+            continue
+        if any(p.startswith("__") and p.endswith("__") for p in parts[:-1]):
+            continue
+        if path.suffix != ".py":
+            continue
+        if spec is not None and spec.match_file(rel.as_posix()):
+            continue
+
+        results.append(path)
+    return sorted(results)
+
+
 def rollback_revisions(data: dict, target_dir: Path) -> None:
     """Reverts changes applied by a JSON patch."""
     # 1. Rollback artifacts (delete newly created files)
@@ -261,8 +311,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="AST-based Code Annotator and JSON Patcher")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    annotate_parser = subparsers.add_parser("annotate", help="Annotate a Python file with cell markers")
-    annotate_parser.add_argument("target", type=Path, help="Target Python file")
+    annotate_parser = subparsers.add_parser("annotate", help="Annotate Python file(s) with cell markers")
+    annotate_parser.add_argument("target", type=Path, help="Target Python file or directory")
+    annotate_parser.add_argument("--no-gitignore", action="store_true", help="Don't filter via .gitignore")
+    annotate_parser.add_argument("--include-hidden", action="store_true", help="Include dotted (hidden) dirs/files")
+    annotate_parser.add_argument("--dry-run", action="store_true", help="List files that would be annotated, don't write")
 
     patch_parser = subparsers.add_parser("patch", help="Apply JSON response patch to target directory")
     patch_parser.add_argument("json_file", type=Path, help="JSON response file")
@@ -276,7 +329,25 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command == "annotate":
-        annotate_file(args.target)
+        if not args.target.exists():
+            logging.error(f"Target does not exist: {args.target}")
+            sys.exit(1)
+        files = iter_python_files(
+            args.target,
+            use_gitignore=not args.no_gitignore,
+            include_hidden=args.include_hidden,
+        )
+        if not files:
+            logging.warning(f"No Python files found under {args.target}")
+            return
+        if args.dry_run:
+            for f in files:
+                print(f)
+            logging.info(f"[dry-run] {len(files)} file(s) would be annotated")
+            return
+        for f in files:
+            annotate_file(f)
+        logging.info(f"Processed {len(files)} file(s)")
     elif args.command in ["patch", "rollback"]:
         if not args.json_file.exists():
             logging.error(f"JSON file not found: {args.json_file}")

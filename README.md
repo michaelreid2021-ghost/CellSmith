@@ -16,15 +16,27 @@ pip install -e .
 ## Use
 
 ```bash
-# 1. Annotate a file with cell markers + the AI patch schema header
+# 1a. Annotate a single file
 cellsmith annotate path/to/file.py
 
-# 2. Hand the annotated file to your LLM, get back a JSON patch, save it as patch.json
+# 1b. Or annotate every .py in a project — respects .gitignore by default,
+#     skips dotted dirs (.git/.venv) and dunder dirs (__pycache__).
+cellsmith annotate .                  # full project
+cellsmith annotate . --dry-run        # preview which files would be touched
+cellsmith annotate . --no-gitignore   # ignore .gitignore filtering
+cellsmith annotate . --include-hidden # include dotted dirs/files
+
+# 2. Hand annotated file(s) to your LLM, get back a JSON patch, save as patch.json
 cellsmith patch patch.json .
 
 # 3. Roll back if the patch was bad
 cellsmith rollback patch.json .
 ```
+
+> Annotation is Python-only (it walks the AST). Patching can target **any**
+> file via `REPLACE` (JSON, TOML, Markdown, anything), and `CELL_PATCH` /
+> `CELL_CREATE` work on any file that has cell markers — but for now only
+> Python files get marker generation out of the box.
 
 Every patch run silently appends a row to `patch_telemetry.jsonl` in the
 working directory — your private brag log. Set `CELLSMITH_MODEL` and
