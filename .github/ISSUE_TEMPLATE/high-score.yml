@@ -1,0 +1,49 @@
+name: "🏆 Submit High Score"
+description: Submit a CellSmith patch run to the leaderboard.
+title: "[score] <model> — <node-count> nodes"
+labels: ["high-score"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Paste **one** JSON line from your `patch_telemetry.jsonl` plus the patched
+        Python code. The Action will independently re-parse the code with `ast.walk`
+        to verify the node count, run `ruff check` on it, and reject the submission
+        if either gate fails. Reasonable honor-system on `model` / `engine` fields.
+
+  - type: input
+    id: handle
+    attributes:
+      label: Display name
+      description: How you want to appear on the leaderboard.
+      placeholder: e.g. cool-prompt-wizard
+    validations:
+      required: true
+
+  - type: textarea
+    id: telemetry
+    attributes:
+      label: Telemetry JSON
+      description: Paste the single-line JSON object from your `patch_telemetry.jsonl`.
+      render: json
+      placeholder: |
+        {"ts":"2026-05-07T...","file":"...","tool":"CELL_PATCH","loc":...,"nodes":...,"score":...,"model":"qwen-3.9-4b","engine":"mlx"}
+    validations:
+      required: true
+
+  - type: textarea
+    id: code
+    attributes:
+      label: Patched code
+      description: The exact `code_content` that was applied (so we can re-parse it).
+      render: python
+    validations:
+      required: true
+
+  - type: textarea
+    id: prompt_notes
+    attributes:
+      label: Prompt notes (optional)
+      description: Brag about the prompt strategy / context window / setup.
+    validations:
+      required: false
