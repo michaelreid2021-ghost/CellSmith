@@ -67,6 +67,16 @@ def main() -> None:
     handle = extract_field(body, "Display name") or user
     model = extract_field(body, "Model") or "unknown"
     engine = extract_field(body, "Engine") or "unknown"
+    input_src = extract_field(body, "Input context (source the LLM reviewed)")
+    if not input_src:
+        fail("no input context provided")
+    try:
+        input_nodes = len(list(ast.walk(ast.parse(input_src))))
+    except SyntaxError as e:
+        fail(f"input context did not parse as Python: {e}")
+    if input_nodes == 0:
+        fail("input context parsed to zero AST nodes")
+
     payload_raw = extract_field(body, "JSON patch payload")
     if not payload_raw:
         fail("no JSON patch payload found")
@@ -112,11 +122,14 @@ def main() -> None:
         fail("one or more revisions failed verification:\n\n" + "\n\n".join(rejections))
 
     total_score = round(total_score, 2)
+    leverage = round(total_score / input_nodes, 4) if input_nodes else 0.0
     entry = {
         "rank": None,
         "handle": handle,
         "score": total_score,
         "nodes": total_nodes,
+        "input_nodes": input_nodes,
+        "leverage": leverage,
         "patches": counts["CELL_PATCH"],
         "creates": counts["CELL_CREATE"],
         "replaces": counts["REPLACE"],
@@ -135,11 +148,14 @@ def main() -> None:
 
     LEADERBOARD.write_text(json.dumps(board, indent=2) + "\n", encoding="utf-8")
 
-    rows = ["| # | Handle | Score | Nodes | 🔧 Patch | ➕ Create | ♻️ Replace | Model | Engine |",
-            "|---|--------|-------|-------|---------|----------|------------|-------|--------|"]
+    rows = [
+        "| # | Handle | Score | Out Nodes | In Nodes | Leverage | 🔧 Patch | ➕ Create | ♻️ Replace | Model | Engine |",
+        "|---|--------|-------|-----------|----------|----------|---------|----------|------------|-------|--------|",
+    ]
     for e in board:
         rows.append(
             f"| {e['rank']} | {e['handle']} | {e['score']} | {e['nodes']} | "
+            f"{e.get('input_nodes', '?')} | {e.get('leverage', '?')} | "
             f"{e['patches']} | {e['creates']} | {e['replaces']} | "
             f"{e['model']} | {e['engine']} |"
         )
@@ -163,8 +179,9 @@ def main() -> None:
         f"across {len(revisions)} revision(s) — "
         f"{counts['CELL_PATCH']}× CELL_PATCH, "
         f"{counts['CELL_CREATE']}× CELL_CREATE, "
-        f"{counts['REPLACE']}× REPLACE "
-        f"({total_nodes} total nodes)."
+        f"{counts['REPLACE']}× REPLACE. "
+        f"Output: {total_nodes} nodes from an input context of {input_nodes} nodes "
+        f"(leverage {leverage})."
     )
 
 

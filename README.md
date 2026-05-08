@@ -41,7 +41,11 @@ session**. You'll get tallies of how many CELL_PATCH / CELL_CREATE / REPLACE
 ops your LLM landed in one shot. Cheaters and broken code get rejected with
 a comment.
 
-Per-revision score is `nodes × tool_multiplier`, summed across the session:
+Per-revision score is `nodes × tool_multiplier`, summed across the session.
+We also count the **input context** (the source you handed the LLM) and show
+**Leverage** = `output_score / input_nodes` — i.e. how much logic the model
+produced per node of context it had to comprehend. Tiny model + huge codebase
++ surgical CELL_PATCH = absurdly high leverage.
 
 | Tool | Multiplier | Why |
 |------|------------|-----|
@@ -52,9 +56,9 @@ Per-revision score is `nodes × tool_multiplier`, summed across the session:
 Honor system on `model` / `engine` (unverifiable). Math is reproducible.
 
 <!-- LB:START -->
-| # | Handle | Score | Nodes | 🔧 Patch | ➕ Create | ♻️ Replace | Model | Engine |
-|---|--------|-------|-------|---------|----------|------------|-------|--------|
-| _no submissions yet — be the first_ | | | | | | | | |
+| # | Handle | Score | Out Nodes | In Nodes | Leverage | 🔧 Patch | ➕ Create | ♻️ Replace | Model | Engine |
+|---|--------|-------|-----------|----------|----------|---------|----------|------------|-------|--------|
+| _no submissions yet — be the first_ | | | | | | | | | | |
 <!-- LB:END -->
 
 ## License

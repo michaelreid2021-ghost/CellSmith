@@ -40,6 +40,19 @@ body:
       required: true
 
   - type: textarea
+    id: input_context
+    attributes:
+      label: Input context (source the LLM reviewed)
+      description: |
+        Paste the annotated source file(s) you handed to the LLM as context.
+        Concatenate multiple files if needed. Just has to parse as Python — no
+        lint check is run on it (it's existing code, not your submission). This
+        measures how much code the LLM had to comprehend to produce its patch.
+      render: python
+    validations:
+      required: true
+
+  - type: textarea
     id: payload
     attributes:
       label: JSON patch payload
