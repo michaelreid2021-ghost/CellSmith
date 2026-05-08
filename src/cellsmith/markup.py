@@ -22,7 +22,7 @@ class CellAnnotator(ast.NodeVisitor):
 
     def _handle_import(self, node: ast.AST) -> None:
         if not self.imports_marked and getattr(node, 'col_offset', -1) == 0:
-            self.insertions.append((node.lineno, "# %% [imports]\n"))
+            self.insertions.append((node.lineno, "\n# %% [imports]\n"))
             self.imports_marked = True
         self.generic_visit(node)
 
