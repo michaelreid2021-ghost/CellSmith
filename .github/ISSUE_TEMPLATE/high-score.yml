@@ -1,15 +1,16 @@
 name: "🏆 Submit High Score"
-description: Submit a CellSmith patch run to the leaderboard.
-title: "[score] <model> — <node-count> nodes"
+description: Submit a CellSmith patch session to the leaderboard.
+title: "[score] <model> — <session-summary>"
 labels: ["high-score"]
 body:
   - type: markdown
     attributes:
       value: |
-        Paste **one** JSON line from your `patch_telemetry.jsonl` plus the patched
-        Python code. The Action will independently re-parse the code with `ast.walk`
-        to verify the node count, run `ruff check` on it, and reject the submission
-        if either gate fails. Reasonable honor-system on `model` / `engine` fields.
+        Paste the **entire JSON patch payload** your LLM produced (the same file
+        you fed to `cellsmith patch`). The Action will iterate every revision,
+        re-run `ast.walk` on each `code_content`, run `ruff check` on each one,
+        and sum a weighted score for the whole session. You'll get tallies of
+        how many `CELL_PATCH` / `CELL_CREATE` / `REPLACE` ops your LLM landed.
 
   - type: input
     id: handle
@@ -20,23 +21,37 @@ body:
     validations:
       required: true
 
-  - type: textarea
-    id: telemetry
+  - type: input
+    id: model
     attributes:
-      label: Telemetry JSON
-      description: Paste the single-line JSON object from your `patch_telemetry.jsonl`.
-      render: json
-      placeholder: |
-        {"ts":"2026-05-07T...","file":"...","tool":"CELL_PATCH","loc":...,"nodes":...,"score":...,"model":"qwen-3.9-4b","engine":"mlx"}
+      label: Model
+      description: The LLM you used (honor system).
+      placeholder: e.g. qwen-3.9-4b
+    validations:
+      required: true
+
+  - type: input
+    id: engine
+    attributes:
+      label: Engine
+      description: Inference engine / runner.
+      placeholder: e.g. mlx, llama.cpp, vLLM, anthropic-api
     validations:
       required: true
 
   - type: textarea
-    id: code
+    id: payload
     attributes:
-      label: Patched code
-      description: The exact `code_content` that was applied (so we can re-parse it).
-      render: python
+      label: JSON patch payload
+      description: The full payload — must contain a `revisions` array (and optionally `artifacts`).
+      render: json
+      placeholder: |
+        {
+          "revisions": [
+            {"filename": "foo.py", "revision_type": "CELL_PATCH", "cell_id": "func:bar", "code_content": "..."},
+            {"filename": "foo.py", "revision_type": "CELL_CREATE", "code_content": "..."}
+          ]
+        }
     validations:
       required: true
 

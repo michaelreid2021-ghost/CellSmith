@@ -1,10 +1,10 @@
-"""Parse a 'high-score' issue, verify the patch, update leaderboard.json + README.
+"""Parse a 'high-score' issue, verify the entire patch session, update files.
 
 Triggered by .github/workflows/leaderboard.yml. Reads the issue body from env,
-extracts the JSON telemetry block and the patched code block, re-runs ast.walk
-to confirm the node count, runs `ruff check` on the code, then updates the
-leaderboard files. On any verification failure, exits non-zero so the workflow
-posts a rejection comment.
+extracts the JSON patch payload (revisions[]), then for each revision re-runs
+ast.walk on code_content and runs ruff check. Sums a weighted session score
+and tallies counts per tool. Updates leaderboard.json + README table. On any
+verification failure, exits non-zero so the workflow posts a rejection comment.
 """
 from __future__ import annotations
 
@@ -23,7 +23,6 @@ README = REPO_ROOT / "README.md"
 LB_START = "<!-- LB:START -->"
 LB_END = "<!-- LB:END -->"
 TOOL_MULT = {"CELL_PATCH": 1.5, "CELL_CREATE": 1.0, "REPLACE": 0.5}
-NODE_TOLERANCE = 2  # absolute slack on claimed node count
 
 
 def fail(msg: str) -> None:
@@ -37,14 +36,7 @@ def succeed(msg: str) -> None:
     print(msg)
 
 
-def extract_block(body: str, lang: str) -> str | None:
-    pat = re.compile(rf"```{lang}\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
-    m = pat.search(body)
-    return m.group(1).strip() if m else None
-
-
 def extract_field(body: str, header: str) -> str | None:
-    # Issue Forms render fields as "### Header\n\nvalue\n\n###"
     pat = re.compile(rf"###\s*{re.escape(header)}\s*\n+(.*?)(?=\n###|\Z)", re.DOTALL)
     m = pat.search(body)
     if not m:
@@ -56,6 +48,15 @@ def extract_field(body: str, header: str) -> str | None:
     return val or None
 
 
+def ruff_ok(code: str) -> tuple[bool, str]:
+    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False, encoding="utf-8") as tf:
+        tf.write(code)
+        tmp_path = tf.name
+    res = subprocess.run(["ruff", "check", tmp_path], capture_output=True, text=True)
+    os.unlink(tmp_path)
+    return res.returncode == 0, res.stdout + res.stderr
+
+
 def main() -> None:
     body = os.environ.get("ISSUE_BODY", "")
     user = os.environ.get("ISSUE_USER", "anonymous")
@@ -64,53 +65,64 @@ def main() -> None:
         fail("empty issue body")
 
     handle = extract_field(body, "Display name") or user
-    telemetry_raw = extract_field(body, "Telemetry JSON") or extract_block(body, "json")
-    code = extract_field(body, "Patched code") or extract_block(body, "python")
-
-    if not telemetry_raw:
-        fail("no telemetry JSON found in submission")
-    if not code:
-        fail("no patched code block found in submission")
+    model = extract_field(body, "Model") or "unknown"
+    engine = extract_field(body, "Engine") or "unknown"
+    payload_raw = extract_field(body, "JSON patch payload")
+    if not payload_raw:
+        fail("no JSON patch payload found")
 
     try:
-        claimed = json.loads(telemetry_raw)
+        payload = json.loads(payload_raw)
     except json.JSONDecodeError as e:
-        fail(f"telemetry JSON did not parse: {e}")
+        fail(f"payload JSON did not parse: {e}")
 
-    tool = claimed.get("tool")
-    if tool not in TOOL_MULT:
-        fail(f"unknown tool '{tool}' (expected one of {sorted(TOOL_MULT)})")
+    revisions = payload.get("revisions", []) or []
+    if not revisions:
+        fail("payload has no `revisions` array (or it's empty)")
 
-    try:
-        actual_nodes = len(list(ast.walk(ast.parse(code))))
-    except SyntaxError as e:
-        fail(f"patched code does not parse: {e}")
+    counts = {"CELL_PATCH": 0, "CELL_CREATE": 0, "REPLACE": 0}
+    total_nodes = 0
+    total_score = 0.0
+    rejections = []
 
-    claimed_nodes = int(claimed.get("nodes", -1))
-    if abs(actual_nodes - claimed_nodes) > NODE_TOLERANCE:
-        fail(f"node count mismatch: claimed {claimed_nodes}, recomputed {actual_nodes}")
+    for i, rev in enumerate(revisions):
+        tool = rev.get("revision_type")
+        code = rev.get("code_content", "")
+        if tool not in TOOL_MULT:
+            rejections.append(f"revision[{i}]: unknown tool '{tool}'")
+            continue
+        if not code.strip():
+            rejections.append(f"revision[{i}]: empty code_content")
+            continue
+        try:
+            nodes = len(list(ast.walk(ast.parse(code))))
+        except SyntaxError as e:
+            rejections.append(f"revision[{i}] ({tool}): syntax error: {e}")
+            continue
+        ok, ruff_out = ruff_ok(code)
+        if not ok:
+            snippet = ruff_out.strip().splitlines()[:5]
+            rejections.append(f"revision[{i}] ({tool}): ruff failed:\n" + "\n".join(snippet))
+            continue
+        counts[tool] += 1
+        total_nodes += nodes
+        total_score += nodes * TOOL_MULT[tool]
 
-    # ruff gate
-    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False, encoding="utf-8") as tf:
-        tf.write(code)
-        tmp_path = tf.name
-    ruff = subprocess.run(
-        ["ruff", "check", tmp_path], capture_output=True, text=True
-    )
-    os.unlink(tmp_path)
-    if ruff.returncode != 0:
-        fail(f"ruff check failed:\n```\n{ruff.stdout}{ruff.stderr}\n```")
+    if rejections:
+        fail("one or more revisions failed verification:\n\n" + "\n\n".join(rejections))
 
-    score = round(actual_nodes * TOOL_MULT[tool], 2)
+    total_score = round(total_score, 2)
     entry = {
         "rank": None,
         "handle": handle,
-        "score": score,
-        "nodes": actual_nodes,
-        "tool": tool,
-        "model": claimed.get("model", "unknown"),
-        "engine": claimed.get("engine", "unknown"),
-        "ts": claimed.get("ts", ""),
+        "score": total_score,
+        "nodes": total_nodes,
+        "patches": counts["CELL_PATCH"],
+        "creates": counts["CELL_CREATE"],
+        "replaces": counts["REPLACE"],
+        "revisions": len(revisions),
+        "model": model,
+        "engine": engine,
         "issue": int(issue_num) if str(issue_num).isdigit() else issue_num,
     }
 
@@ -123,12 +135,13 @@ def main() -> None:
 
     LEADERBOARD.write_text(json.dumps(board, indent=2) + "\n", encoding="utf-8")
 
-    rows = ["| # | Handle | Score | Nodes | Tool | Model | Engine |",
-            "|---|--------|-------|-------|------|-------|--------|"]
+    rows = ["| # | Handle | Score | Nodes | 🔧 Patch | ➕ Create | ♻️ Replace | Model | Engine |",
+            "|---|--------|-------|-------|---------|----------|------------|-------|--------|"]
     for e in board:
         rows.append(
             f"| {e['rank']} | {e['handle']} | {e['score']} | {e['nodes']} | "
-            f"{e['tool']} | {e['model']} | {e['engine']} |"
+            f"{e['patches']} | {e['creates']} | {e['replaces']} | "
+            f"{e['model']} | {e['engine']} |"
         )
     table = "\n".join(rows)
 
@@ -144,9 +157,15 @@ def main() -> None:
         readme += f"\n\n## 🏆 Leaderboard\n\n{LB_START}\n{table}\n{LB_END}\n"
     README.write_text(readme, encoding="utf-8")
 
-    rank = next(e["rank"] for e in board if e is entry or (e["handle"] == handle and e["score"] == score))
-    succeed(f"Verified! **{handle}** ranked **#{rank}** with score **{score}** "
-            f"({actual_nodes} nodes × {TOOL_MULT[tool]} {tool}).")
+    rank = next(e["rank"] for e in board if e["issue"] == entry["issue"])
+    succeed(
+        f"Verified! **{handle}** ranked **#{rank}** with score **{total_score}** "
+        f"across {len(revisions)} revision(s) — "
+        f"{counts['CELL_PATCH']}× CELL_PATCH, "
+        f"{counts['CELL_CREATE']}× CELL_CREATE, "
+        f"{counts['REPLACE']}× REPLACE "
+        f"({total_nodes} total nodes)."
+    )
 
 
 if __name__ == "__main__":

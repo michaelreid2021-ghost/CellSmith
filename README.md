@@ -33,12 +33,15 @@ got the credit.
 
 ## 🏆 Leaderboard
 
-Click **Issues → New issue → 🏆 Submit High Score** and paste one line from
-your `patch_telemetry.jsonl` plus the patched code. A GitHub Action re-runs
-`ast.walk` to verify the node count, runs `ruff check` on the code, and
-updates the table below automatically. Cheaters get rejected with a comment.
+Click **Issues → New issue → 🏆 Submit High Score** and paste your full JSON
+patch payload (the one you fed to `cellsmith patch`). A GitHub Action iterates
+every revision, re-runs `ast.walk` on each `code_content`, runs `ruff check`
+on each, and ranks you by the **summed weighted score across the whole
+session**. You'll get tallies of how many CELL_PATCH / CELL_CREATE / REPLACE
+ops your LLM landed in one shot. Cheaters and broken code get rejected with
+a comment.
 
-The score is `nodes × tool_multiplier`:
+Per-revision score is `nodes × tool_multiplier`, summed across the session:
 
 | Tool | Multiplier | Why |
 |------|------------|-----|
@@ -49,9 +52,9 @@ The score is `nodes × tool_multiplier`:
 Honor system on `model` / `engine` (unverifiable). Math is reproducible.
 
 <!-- LB:START -->
-| # | Handle | Score | Nodes | Tool | Model | Engine |
-|---|--------|-------|-------|------|-------|--------|
-| _no submissions yet — be the first_ | | | | | | |
+| # | Handle | Score | Nodes | 🔧 Patch | ➕ Create | ♻️ Replace | Model | Engine |
+|---|--------|-------|-------|---------|----------|------------|-------|--------|
+| _no submissions yet — be the first_ | | | | | | | | |
 <!-- LB:END -->
 
 ## License
