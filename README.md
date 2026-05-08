@@ -100,7 +100,19 @@ cellsmith patch patch.json .
 
 # 3. Roll back if the patch was bad
 cellsmith rollback patch.json .
+
+# 4. When you're done, strip cell markers + schema header to get plain code back
+cellsmith strip path/to/file.py                # asks for confirmation
+cellsmith strip . -y                           # whole project, skip prompt
+cellsmith strip path/to/file.py --prompt-only  # keep markers, drop schema only
+cellsmith strip path/to/file.py --markers-only # keep schema, drop markers only
 ```
+
+👉 **[examples/hello_world/WALKTHROUGH.md](examples/hello_world/WALKTHROUGH.md)** —
+end-to-end tour: annotate a trivial file, ask any chat-UI LLM to make it
+"the most complex Hello World imaginable" (no schema explanation needed —
+the file teaches the model), apply the patch, optionally submit to the
+leaderboard.
 
 > Annotation is Python-only (it walks the AST). Patching can target **any**
 > file via `REPLACE` (JSON, TOML, Markdown, anything), and `CELL_PATCH` /

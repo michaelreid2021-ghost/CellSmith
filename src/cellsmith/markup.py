@@ -234,6 +234,56 @@ def apply_revisions(data: dict, target_dir: Path) -> None:
             logging.info(f"Appended new cell to {target_file}")
             telemetry.record(telemetry.score_patch(code, "CELL_CREATE"), file=str(target_file), cell_id=rev.get("cell_id"))
 
+def strip_file(
+    filepath: Path,
+    *,
+    strip_prompt: bool = True,
+    strip_markers: bool = True,
+) -> int:
+    """Remove the AI schema header and/or `# %% [...]` cell markers from a file.
+
+    Returns the number of lines removed. No-ops on missing file.
+    """
+    if not filepath.exists():
+        logging.warning(f"strip: file not found: {filepath}")
+        return 0
+    with open(filepath, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+
+    out: List[str] = []
+    skipping_schema = False
+    schema_just_ended = False
+    for line in lines:
+        stripped = line.strip()
+
+        if strip_prompt:
+            if stripped == "# %% [ai_schema:instructions]":
+                skipping_schema = True
+                continue
+            if skipping_schema:
+                if stripped == "# %% [ai_schema:end]":
+                    skipping_schema = False
+                    schema_just_ended = True
+                continue
+            # Drop the trailing instruction comment block that follows ai_schema:end
+            # (it's prepended in annotate but not enclosed by markers).
+            if schema_just_ended:
+                if stripped == "" or stripped.startswith("#"):
+                    continue
+                schema_just_ended = False
+
+        if strip_markers and stripped.startswith("# %% [") and stripped.endswith("]"):
+            continue
+
+        out.append(line)
+
+    removed = len(lines) - len(out)
+    if removed:
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.writelines(out)
+    return removed
+
+
 def _load_gitignore(root: Path):
     """Return a pathspec.PathSpec built from <root>/.gitignore, or None."""
     gi = root / ".gitignore"
@@ -321,6 +371,14 @@ def main() -> None:
     patch_parser.add_argument("json_file", type=Path, help="JSON response file")
     patch_parser.add_argument("target_dir", type=Path, default=Path("."), nargs="?", help="Root directory for patching")
 
+    strip_parser = subparsers.add_parser("strip", help="Remove cell markers and/or the AI schema prompt header")
+    strip_parser.add_argument("target", type=Path, help="Target Python file or directory")
+    strip_parser.add_argument("--prompt-only", action="store_true", help="Only strip the AI schema prompt header")
+    strip_parser.add_argument("--markers-only", action="store_true", help="Only strip the # %% cell markers")
+    strip_parser.add_argument("--no-gitignore", action="store_true", help="Don't filter via .gitignore (dir mode)")
+    strip_parser.add_argument("--include-hidden", action="store_true", help="Include dotted dirs/files (dir mode)")
+    strip_parser.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompt")
+
     # New Rollback Parser
     rollback_parser = subparsers.add_parser("rollback", help="Rollback changes applied by a JSON patch")
     rollback_parser.add_argument("json_file", type=Path, help="JSON response file used for patching")
@@ -348,6 +406,37 @@ def main() -> None:
         for f in files:
             annotate_file(f)
         logging.info(f"Processed {len(files)} file(s)")
+    elif args.command == "strip":
+        if not args.target.exists():
+            logging.error(f"Target does not exist: {args.target}")
+            sys.exit(1)
+        files = iter_python_files(
+            args.target,
+            use_gitignore=not args.no_gitignore,
+            include_hidden=args.include_hidden,
+        )
+        if not files:
+            logging.warning(f"No Python files found under {args.target}")
+            return
+        strip_prompt = not args.markers_only
+        strip_markers = not args.prompt_only
+        what = []
+        if strip_prompt:
+            what.append("AI schema prompt header")
+        if strip_markers:
+            what.append("# %% cell markers")
+        scope = ", ".join(what) if what else "(nothing)"
+        if not args.yes:
+            print(f"About to strip {scope} from {len(files)} file(s) under {args.target}.")
+            print("This is reversible with `cellsmith annotate` but will modify files in-place.")
+            ans = input("Proceed? [y/N] ").strip().lower()
+            if ans not in ("y", "yes"):
+                logging.info("Aborted.")
+                return
+        total = 0
+        for f in files:
+            total += strip_file(f, strip_prompt=strip_prompt, strip_markers=strip_markers)
+        logging.info(f"Stripped {total} line(s) across {len(files)} file(s)")
     elif args.command in ["patch", "rollback"]:
         if not args.json_file.exists():
             logging.error(f"JSON file not found: {args.json_file}")
