@@ -19,8 +19,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install ruff
-        run: pip install ruff
+      - name: Install dependencies
+        run: pip install ruff tweepy
 
       - name: Run verifier
         env:
@@ -38,6 +38,16 @@ jobs:
             git commit -m "leaderboard: process #${{ github.event.issue.number }} [skip ci]"
             git push
           fi
+
+      - name: Post to X (soft-fail)
+        if: success()
+        continue-on-error: true
+        env:
+          X_API_KEY: ${{ secrets.X_API_KEY }}
+          X_API_SECRET: ${{ secrets.X_API_SECRET }}
+          X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
+          X_ACCESS_TOKEN_SECRET: ${{ secrets.X_ACCESS_TOKEN_SECRET }}
+        run: python scripts/post_to_x.py
 
       - name: Comment & close on success
         if: success()

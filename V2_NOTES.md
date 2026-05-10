@@ -20,6 +20,19 @@ Stuff deliberately punted from v1. Add to as you go.
 
 - **Weekly resets / seasons.** Top 50 all-time + top 10 this week.
 
+## X auto-posting
+
+- **Image cards.** Generate a PNG of the new leaderboard row (matplotlib or
+  pillow) and attach it as media via `tweepy.API.media_upload` →
+  `client.create_tweet(media_ids=[...])`. Way higher engagement than text-only.
+- **Reply-thread for transparency.** Auto-reply to the main tweet with the
+  trimmed JSON payload + the leverage math, so anyone curious can audit it
+  without leaving X.
+- **Rate limiting / quiet hours.** If submissions spike, batch them or skip
+  posts between e.g. 02:00–06:00 in the project's chosen timezone.
+- **Curated `models.json`.** Auto-categorize models by name pattern instead
+  of self-declaration, once we know which models actually show up.
+
 ## Versioning / mini-state / `--accept`
 
 Today's `rollback` reverts a single `.bak`. That breaks down for the realistic

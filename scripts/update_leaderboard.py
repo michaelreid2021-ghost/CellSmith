@@ -24,6 +24,62 @@ LB_START = "<!-- LB:START -->"
 LB_END = "<!-- LB:END -->"
 TOOL_MULT = {"CELL_PATCH": 1.5, "CELL_CREATE": 1.0, "REPLACE": 0.5}
 
+# Substring → hashtag string for tweet model attribution.
+# Order matters: more specific keys first.
+MODEL_HASHTAGS = [
+    ("claude", "#Anthropic #Claude"),
+    ("gemma", "#GoogleDeepMind #Gemma"),
+    ("gemini", "#GoogleDeepMind #Gemini"),
+    ("llama", "#MetaAI #Llama"),
+    ("qwen", "#Alibaba #Qwen"),
+    ("mistral", "#MistralAI"),
+    ("phi", "#Microsoft #Phi"),
+    ("deepseek", "#DeepSeek"),
+    ("gpt", "#OpenAI"),
+    ("o1", "#OpenAI"),
+    ("o3", "#OpenAI"),
+    ("o4", "#OpenAI"),
+]
+
+
+def model_hashtags(model: str) -> str:
+    m = model.lower()
+    for needle, tags in MODEL_HASHTAGS:
+        if needle in m:
+            return tags
+    return "#OpenSourceLLM"
+
+
+def write_tweet(*, handle, model, engine, score, leverage, patches, creates,
+                replaces, rank, rank_in_cat, category, is_pb, issue_num) -> None:
+    repo = os.environ.get("GITHUB_REPOSITORY", "michaelreid2021-ghost/CellSmith")
+    issue_url = f"https://github.com/{repo}/issues/{issue_num}"
+    pb_prefix = "🏆 PERSONAL BEST! " if is_pb else "🔥 New entry: "
+    cat_line = ""
+    if category and category != "unknown":
+        cat_line = f"\n→ #{rank_in_cat} in {category} tier"
+    ops = []
+    if patches:
+        ops.append(f"{patches}× CELL_PATCH")
+    if creates:
+        ops.append(f"{creates}× CELL_CREATE")
+    if replaces:
+        ops.append(f"{replaces}× REPLACE")
+    ops_line = " + ".join(ops) if ops else "0 ops"
+
+    tweet = (
+        f"{pb_prefix}{handle} on CellSmith\n"
+        f"{model} ({engine}) landed {ops_line}\n"
+        f"→ score {score} · leverage {leverage}\n"
+        f"→ #{rank} all-time{cat_line}\n\n"
+        f"{model_hashtags(model)} #CellSmith #LLM\n"
+        f"{issue_url}"
+    )
+    # X hard limit is 280; truncate gracefully if needed.
+    if len(tweet) > 280:
+        tweet = tweet[:277] + "…"
+    Path("tweet_text.txt").write_text(tweet, encoding="utf-8")
+
 
 def fail(msg: str) -> None:
     Path("action_message.txt").write_text(f"❌ Rejected: {msg}", encoding="utf-8")
@@ -67,6 +123,9 @@ def main() -> None:
     handle = extract_field(body, "Display name") or user
     model = extract_field(body, "Model") or "unknown"
     engine = extract_field(body, "Engine") or "unknown"
+    category = extract_field(body, "Model size category (self-declared, honor system)") or "unknown"
+    if category not in ("<4B", "<10B", "<30B", "frontier", "unknown"):
+        category = "unknown"
     input_src = extract_field(body, "Input context (source the LLM reviewed)")
     if not input_src:
         fail("no input context provided")
@@ -123,8 +182,15 @@ def main() -> None:
 
     total_score = round(total_score, 2)
     leverage = round(total_score / input_nodes, 4) if input_nodes else 0.0
+
+    # Load existing board BEFORE appending so we can detect personal best
+    board = json.loads(LEADERBOARD.read_text(encoding="utf-8")) if LEADERBOARD.exists() else []
+    prior_pb = max((e["score"] for e in board if e.get("handle") == handle), default=0.0)
+    is_personal_best = total_score > prior_pb
+
     entry = {
         "rank": None,
+        "rank_in_category": None,
         "handle": handle,
         "score": total_score,
         "nodes": total_nodes,
@@ -136,28 +202,38 @@ def main() -> None:
         "revisions": len(revisions),
         "model": model,
         "engine": engine,
+        "category": category,
+        "personal_best": is_personal_best,
         "issue": int(issue_num) if str(issue_num).isdigit() else issue_num,
     }
 
-    board = json.loads(LEADERBOARD.read_text(encoding="utf-8")) if LEADERBOARD.exists() else []
     board.append(entry)
     board.sort(key=lambda e: e["score"], reverse=True)
     board = board[:50]
     for i, e in enumerate(board, 1):
         e["rank"] = i
+    # Per-category rank (only across the kept top-50; cheap)
+    cat_counter = {}
+    for e in board:
+        c = e.get("category", "unknown")
+        cat_counter[c] = cat_counter.get(c, 0) + 1
+        e["rank_in_category"] = cat_counter[c]
 
     LEADERBOARD.write_text(json.dumps(board, indent=2) + "\n", encoding="utf-8")
 
     rows = [
-        "| # | Handle | Score | Out Nodes | In Nodes | Leverage | 🔧 Patch | ➕ Create | ♻️ Replace | Model | Engine |",
-        "|---|--------|-------|-----------|----------|----------|---------|----------|------------|-------|--------|",
+        "| # | Handle | Score | Out | In | Lev | 🔧 | ➕ | ♻️ | Tier | Model | Engine |",
+        "|---|--------|-------|-----|-----|-----|----|----|----|------|-------|--------|",
     ]
     for e in board:
+        cat_rank = e.get("rank_in_category")
+        cat = e.get("category", "unknown")
+        cat_cell = f"#{cat_rank} {cat}" if cat_rank else cat
         rows.append(
             f"| {e['rank']} | {e['handle']} | {e['score']} | {e['nodes']} | "
             f"{e.get('input_nodes', '?')} | {e.get('leverage', '?')} | "
             f"{e['patches']} | {e['creates']} | {e['replaces']} | "
-            f"{e['model']} | {e['engine']} |"
+            f"{cat_cell} | {e['model']} | {e['engine']} |"
         )
     table = "\n".join(rows)
 
@@ -174,6 +250,17 @@ def main() -> None:
     README.write_text(readme, encoding="utf-8")
 
     rank = next(e["rank"] for e in board if e["issue"] == entry["issue"])
+    rank_in_cat = next(e["rank_in_category"] for e in board if e["issue"] == entry["issue"])
+
+    # Build tweet text for the X-poster step (which soft-fails if creds missing).
+    write_tweet(
+        handle=handle, model=model, engine=engine, score=total_score,
+        leverage=leverage, patches=counts["CELL_PATCH"],
+        creates=counts["CELL_CREATE"], replaces=counts["REPLACE"],
+        rank=rank, rank_in_cat=rank_in_cat, category=category,
+        is_pb=is_personal_best, issue_num=issue_num,
+    )
+
     succeed(
         f"Verified! **{handle}** ranked **#{rank}** with score **{total_score}** "
         f"across {len(revisions)} revision(s) — "

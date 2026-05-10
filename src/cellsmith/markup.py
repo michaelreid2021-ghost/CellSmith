@@ -118,22 +118,28 @@ def annotate_file(filepath: Path) -> None:
     schema_header = (
         "# %% [ai_schema:instructions]\n"
         "# AI INSTRUCTIONS - PATCH SCHEMA:\n"
-        "# To modify this file, return a JSON response with the following structure. When CELL_PATCH it must be the exact cell_id that exists in the file you are submitting an update for."
+        "#\n"
+        "# To modify this file, return a JSON response with the following structure.\n"
+        "# When using CELL_PATCH, `cell_id` MUST be an exact marker that exists in the file.\n"
+        "#\n"
         "# {\n"
         "#   \"revisions\": [\n"
         "#     {\n"
         "#       \"filename\": \"path/to/this/file.py\",\n"
         "#       \"revision_type\": \"CELL_PATCH\",  # Or \"REPLACE\", \"CELL_CREATE\"\n"
-        "#       \"cell_id\": \"func:my_function\",  # Match the exact marker ID (e.g., 'imports', 'func:x')\n"
+        "#       \"cell_id\": \"func:my_function\",  # Match an exact marker (e.g. 'imports', 'func:x', 'method:Cls.x')\n"
         "#       \"code_content\": \"# %% [func:my_function]\\ndef my_function():\\n    pass\\n\"\n"
         "#     }\n"
         "#   ]\n"
         "# }\n"
-        "# %% [ai_schema:end]\n\n"
-        "#You must choose the most efficient tool for the job to respect the user's token cost and the Auditor's requirements:"
-        "#* **REPLACE**: For new files, total rewrites, or files under 50 lines."
-        "#* **CELL_PATCH**: For surgical updates to specific functions or classes. You MUST use a valid `cell_id` (e.g., `func:name`, `class:Name`, `method:Class.name`) that exists in the current **SKELETON**, or #file that is the **FOCUS** of the current ask."
-        "#* **CELL_CREATE**: To append new logic, using `insert_after` to specify placement."
+        "#\n"
+        "# Choose the most efficient tool for the job (the user pays per token):\n"
+        "#   * REPLACE     : For new files, total rewrites, or files under 50 lines.\n"
+        "#   * CELL_PATCH  : For surgical updates to a specific function/class/method.\n"
+        "#                   `cell_id` MUST exist in the current SKELETON of the file.\n"
+        "#   * CELL_CREATE : To append new logic. Use `insert_after` to place it.\n"
+        "# %% [ai_schema:end]\n"
+        "\n"
     )
     
     if not any("AI INSTRUCTIONS - PATCH SCHEMA" in line for line in lines[:20]):
@@ -371,6 +377,17 @@ def main() -> None:
     patch_parser.add_argument("json_file", type=Path, help="JSON response file")
     patch_parser.add_argument("target_dir", type=Path, default=Path("."), nargs="?", help="Root directory for patching")
 
+    submit_parser = subparsers.add_parser("submit", help="Open a pre-filled GitHub issue to submit a leaderboard entry")
+    submit_parser.add_argument("payload", type=Path, help="JSON patch payload (the file you fed to `cellsmith patch`)")
+    submit_parser.add_argument("--context", type=Path, action="append", help="Path to annotated source the LLM saw (file or dir; repeatable)")
+    submit_parser.add_argument("--handle", required=True, help="Display name on the leaderboard")
+    submit_parser.add_argument("--model", required=True, help="Model name, e.g. gemma-3-4b")
+    submit_parser.add_argument("--engine", required=True, help="Inference engine, e.g. mlx, llama.cpp, anthropic-api")
+    submit_parser.add_argument("--category", choices=["tiny", "small", "medium", "frontier", "unknown"],
+                               help="Self-declared model size bracket: tiny=<4B, small=<10B, medium=<30B, frontier, unknown")
+    submit_parser.add_argument("--notes", help="Free-form prompt-engineering notes (optional)")
+    submit_parser.add_argument("--print-only", action="store_true", help="Print the URL instead of opening the browser")
+
     strip_parser = subparsers.add_parser("strip", help="Remove cell markers and/or the AI schema prompt header")
     strip_parser.add_argument("target", type=Path, help="Target Python file or directory")
     strip_parser.add_argument("--prompt-only", action="store_true", help="Only strip the AI schema prompt header")
@@ -406,6 +423,12 @@ def main() -> None:
         for f in files:
             annotate_file(f)
         logging.info(f"Processed {len(files)} file(s)")
+    elif args.command == "submit":
+        try:
+            from cellsmith.submit import run_submit
+        except ImportError:
+            from submit import run_submit  # script-mode fallback
+        sys.exit(run_submit(args, iter_python_files))
     elif args.command == "strip":
         if not args.target.exists():
             logging.error(f"Target does not exist: {args.target}")

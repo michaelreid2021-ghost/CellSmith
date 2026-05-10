@@ -39,6 +39,21 @@ body:
     validations:
       required: true
 
+  - type: dropdown
+    id: category
+    attributes:
+      label: Model size category (self-declared, honor system)
+      description: Used to compute your rank within a tier. Pick the bracket your model fits.
+      options:
+        - "<4B"
+        - "<10B"
+        - "<30B"
+        - "frontier"
+        - "unknown"
+      default: 4
+    validations:
+      required: true
+
   - type: textarea
     id: input_context
     attributes:

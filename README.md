@@ -101,7 +101,14 @@ cellsmith patch patch.json .
 # 3. Roll back if the patch was bad
 cellsmith rollback patch.json .
 
-# 4. When you're done, strip cell markers + schema header to get plain code back
+# 4. (Optional) Submit to the leaderboard with one command — opens a
+#    pre-filled GitHub issue in your browser. Click submit. Done.
+cellsmith submit patch.json --context src/ \
+    --handle "your-handle" \
+    --model "gemma-3-4b" --engine "mlx" \
+    --category tiny  # tiny=<4B, small=<10B, medium=<30B, frontier, unknown
+
+# 5. When you're done, strip cell markers + schema header to get plain code back
 cellsmith strip path/to/file.py                # asks for confirmation
 cellsmith strip . -y                           # whole project, skip prompt
 cellsmith strip path/to/file.py --prompt-only  # keep markers, drop schema only
@@ -146,12 +153,19 @@ produced per node of context it had to comprehend. Tiny model + huge codebase
 | `CELL_CREATE` | 1.0× | Standard append |
 | `REPLACE` | 0.5× | Brute-force rewrites get penalized |
 
-Honor system on `model` / `engine` (unverifiable). Math is reproducible.
+Honor system on `model` / `engine` / `category` (unverifiable). Math is reproducible.
+
+Submitters self-declare a **size category** — `<4B`, `<10B`, `<30B`, `frontier`,
+or `unknown` — so a 4B local model can compete on its own tier without being
+buried by frontier APIs. Each accepted submission also auto-posts to the
+project's X account with model-maker hashtags (e.g. `#GoogleDeepMind #Gemma`,
+`#MetaAI #Llama`, `#Anthropic #Claude`) and a 🏆 PERSONAL BEST flag when
+applicable.
 
 <!-- LB:START -->
-| # | Handle | Score | Out Nodes | In Nodes | Leverage | 🔧 Patch | ➕ Create | ♻️ Replace | Model | Engine |
-|---|--------|-------|-----------|----------|----------|---------|----------|------------|-------|--------|
-| _no submissions yet — be the first_ | | | | | | | | | | |
+| # | Handle | Score | Out | In | Lev | 🔧 | ➕ | ♻️ | Tier | Model | Engine |
+|---|--------|-------|-----|-----|-----|----|----|----|------|-------|--------|
+| _no submissions yet — be the first_ | | | | | | | | | | | |
 <!-- LB:END -->
 
 ## License
