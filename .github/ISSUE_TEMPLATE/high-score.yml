@@ -9,8 +9,7 @@ body:
         Paste the **entire JSON patch payload** your LLM produced (the same file
         you fed to `cellsmith patch`). The Action will iterate every revision,
         re-run `ast.walk` on each `code_content`, run `ruff check` on each one,
-        and sum a weighted score for the whole session. You'll get tallies of
-        how many `CELL_PATCH` / `CELL_CREATE` / `REPLACE` ops your LLM landed.
+        and sum a weighted score for the whole session.
 
   - type: input
     id: handle
@@ -54,16 +53,16 @@ body:
     validations:
       required: true
 
-  - type: textarea
-    id: input_context
+  - type: input
+    id: input_chars
     attributes:
-      label: Input context (source the LLM reviewed)
-      description: |
-        Paste the annotated source file(s) you handed to the LLM as context.
-        Concatenate multiple files if needed. Just has to parse as Python — no
-        lint check is run on it (it's existing code, not your submission). This
-        measures how much code the LLM had to comprehend to produce its patch.
-      render: python
+      label: Input context size (characters)
+      description: >
+        Total character count of the source file(s) you handed to the LLM.
+        Run `cellsmith submit` and it counts this for you — or paste
+        `wc -m yourfile.py` / `(Get-Content yourfile.py | Measure-Object -Character).Characters`.
+        Honor system, like model name.
+      placeholder: e.g. 18432
     validations:
       required: true
 
@@ -71,7 +70,7 @@ body:
     id: payload
     attributes:
       label: JSON patch payload
-      description: The full payload — must contain a `revisions` array (and optionally `artifacts`).
+      description: The full payload — must contain a `revisions` array.
       render: json
       placeholder: |
         {

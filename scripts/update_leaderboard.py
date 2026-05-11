@@ -126,15 +126,11 @@ def main() -> None:
     category = extract_field(body, "Model size category (self-declared, honor system)") or "unknown"
     if category not in ("<4B", "<10B", "<30B", "frontier", "unknown"):
         category = "unknown"
-    input_src = extract_field(body, "Input context (source the LLM reviewed)")
-    if not input_src:
-        fail("no input context provided")
+    input_chars_raw = extract_field(body, "Input context size (characters)") or "0"
     try:
-        input_nodes = len(list(ast.walk(ast.parse(input_src))))
-    except SyntaxError as e:
-        fail(f"input context did not parse as Python: {e}")
-    if input_nodes == 0:
-        fail("input context parsed to zero AST nodes")
+        input_chars = int(input_chars_raw.strip().replace(",", ""))
+    except ValueError:
+        fail(f"input_chars is not an integer: {input_chars_raw!r}")
 
     payload_raw = extract_field(body, "JSON patch payload")
     if not payload_raw:
@@ -181,7 +177,7 @@ def main() -> None:
         fail("one or more revisions failed verification:\n\n" + "\n\n".join(rejections))
 
     total_score = round(total_score, 2)
-    leverage = round(total_score / input_nodes, 4) if input_nodes else 0.0
+    leverage = round(total_score / input_chars, 4) if input_chars else 0.0
 
     # Load existing board BEFORE appending so we can detect personal best
     board = json.loads(LEADERBOARD.read_text(encoding="utf-8")) if LEADERBOARD.exists() else []
@@ -194,7 +190,7 @@ def main() -> None:
         "handle": handle,
         "score": total_score,
         "nodes": total_nodes,
-        "input_nodes": input_nodes,
+        "input_chars": input_chars,
         "leverage": leverage,
         "patches": counts["CELL_PATCH"],
         "creates": counts["CELL_CREATE"],
@@ -231,7 +227,7 @@ def main() -> None:
         cat_cell = f"#{cat_rank} {cat}" if cat_rank else cat
         rows.append(
             f"| {e['rank']} | {e['handle']} | {e['score']} | {e['nodes']} | "
-            f"{e.get('input_nodes', '?')} | {e.get('leverage', '?')} | "
+            f"{e.get('input_chars', '?')} | {e.get('leverage', '?')} | "
             f"{e['patches']} | {e['creates']} | {e['replaces']} | "
             f"{cat_cell} | {e['model']} | {e['engine']} |"
         )
@@ -267,7 +263,7 @@ def main() -> None:
         f"{counts['CELL_PATCH']}× CELL_PATCH, "
         f"{counts['CELL_CREATE']}× CELL_CREATE, "
         f"{counts['REPLACE']}× REPLACE. "
-        f"Output: {total_nodes} nodes from an input context of {input_nodes} nodes "
+        f"Output: {total_nodes} nodes from {input_chars:,} input chars "
         f"(leverage {leverage})."
     )
 

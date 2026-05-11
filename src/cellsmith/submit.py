@@ -1,16 +1,16 @@
 """`cellsmith submit` — open a pre-filled GitHub issue in the browser.
 
-Reduces the leaderboard-submission flow to one shell command. Reads your
-patch JSON + your annotated input context, URL-encodes them into GitHub's
-issue-form prefill query string, and opens the result. Click submit. Done.
+Reads your patch JSON, counts characters in any --context files you point at
+(locally, nothing uploaded), then opens a pre-filled GitHub issue form.
+Click submit. Done.
 
-Falls back to printing the URL if the browser can't open or if --print-only.
+What goes in the URL: handle / model / engine / category / payload / input_chars
+What never leaves your machine: your source code
 """
 from __future__ import annotations
 
 import logging
 import os
-import sys
 import urllib.parse
 import webbrowser
 from pathlib import Path
@@ -19,8 +19,6 @@ from typing import Iterable
 DEFAULT_REPO = "michaelreid2021-ghost/CellSmith"
 TEMPLATE = "high-score.yml"
 
-# CLI-friendly category values map to display labels (shell-safe; no `<` glyph
-# that some shells parse as redirect).
 CATEGORY_LABEL = {
     "tiny": "<4B",
     "small": "<10B",
@@ -28,23 +26,21 @@ CATEGORY_LABEL = {
     "frontier": "frontier",
     "unknown": "unknown",
 }
-# GitHub URL practical max ~8 KB. We cap context paste size below that.
-MAX_CONTEXT_BYTES = 60_000
-MAX_PAYLOAD_BYTES = 60_000
+
+# GitHub rejects GETs over ~8 KB. Keep payload well under that.
+MAX_PAYLOAD_BYTES = 6_000
 
 
-def _gather_context(context_paths: Iterable[Path], iter_python_files) -> str:
-    """Concatenate Python files under each given path with `# === <path> ===` headers."""
-    blobs = []
+def _count_input_chars(context_paths: Iterable[Path], iter_python_files) -> int:
+    """Count total characters across all Python files. Source stays on disk."""
+    total = 0
     for root in context_paths:
         for f in iter_python_files(root):
             try:
-                content = f.read_text(encoding="utf-8")
+                total += len(f.read_text(encoding="utf-8"))
             except OSError as e:
                 logging.warning(f"submit: could not read {f}: {e}")
-                continue
-            blobs.append(f"# === {f} ===\n{content}")
-    return "\n\n".join(blobs)
+    return total
 
 
 def build_url(
@@ -54,7 +50,7 @@ def build_url(
     model: str,
     engine: str,
     payload: str,
-    input_context: str,
+    input_chars: int,
     category: str | None = None,
     notes: str | None = None,
 ) -> str:
@@ -65,7 +61,7 @@ def build_url(
         "model": model,
         "engine": engine,
         "payload": payload,
-        "input_context": input_context,
+        "input_chars": str(input_chars),
     }
     if category:
         params["category"] = CATEGORY_LABEL.get(category, category)
@@ -76,44 +72,41 @@ def build_url(
 
 
 def _open_url(url: str) -> bool:
-    """Open *url* in the default browser, working around Windows os.startfile
-    path-length limits by bouncing through a tiny local HTML redirect file."""
+    """Open url in the default browser.
+
+    Windows webbrowser.open() calls os.startfile() which chokes on long URLs.
+    Fall back to a local meta-refresh HTML stub with a short file:// path.
+    """
     import tempfile
     import threading
 
-    # Try direct open first (works fine on macOS/Linux and for short URLs).
     try:
         return webbrowser.open(url)
     except (ValueError, OSError):
-        pass  # Windows path-too-long or similar — fall through to HTML bounce.
+        pass
 
-    # Write a self-refreshing HTML stub and open its (short) local path.
     escaped = url.replace("&", "&amp;").replace('"', "&quot;")
     html = (
         "<!DOCTYPE html><html><head>"
         f'<meta http-equiv="refresh" content="0;url={escaped}">'
-        f'<title>Redirecting…</title></head><body>'
-        f'<p>If you are not redirected automatically, '
-        f'<a href="{escaped}">click here</a>.</p>'
+        "<title>Redirecting to GitHub…</title></head><body>"
+        f'<p>Opening GitHub… <a href="{escaped}">click here</a> if not redirected.</p>'
         "</body></html>\n"
     )
     try:
         tf = tempfile.NamedTemporaryFile(
             "w", suffix=".html", delete=False, encoding="utf-8",
-            prefix="cellsmith_submit_"
+            prefix="cellsmith_submit_",
         )
         tf.write(html)
         tf.flush()
         tf.close()
         tmp_path = tf.name
-
         opened = webbrowser.open(f"file:///{tmp_path}")
 
-        # Clean up the temp file after a short delay so the browser has time
-        # to read it before it disappears.
         def _cleanup():
             import time, os as _os
-            time.sleep(5)
+            time.sleep(10)
             try:
                 _os.unlink(tmp_path)
             except OSError:
@@ -134,23 +127,20 @@ def run_submit(args, iter_python_files) -> int:
         logging.error(f"payload not found: {payload_path}")
         return 1
     payload = payload_path.read_text(encoding="utf-8")
-    if len(payload.encode("utf-8")) > MAX_PAYLOAD_BYTES:
+
+    payload_too_large = len(payload.encode("utf-8")) > MAX_PAYLOAD_BYTES
+    if payload_too_large:
         logging.warning(
-            f"payload is {len(payload)} bytes — over {MAX_PAYLOAD_BYTES} URL cap. "
-            "Opening blank issue form; paste the payload manually."
+            f"Payload is {len(payload.encode('utf-8')):,} bytes "
+            f"(URL cap ~{MAX_PAYLOAD_BYTES:,} bytes). "
+            "Form will open without it — paste the JSON manually."
         )
         payload = ""
 
-    context_paths = args.context or []
-    input_context = ""
-    if context_paths:
-        input_context = _gather_context(context_paths, iter_python_files)
-        if len(input_context.encode("utf-8")) > MAX_CONTEXT_BYTES:
-            logging.warning(
-                f"input context is {len(input_context)} bytes — over "
-                f"{MAX_CONTEXT_BYTES} URL cap. Opening form without it; paste manually."
-            )
-            input_context = ""
+    input_chars = 0
+    if args.context:
+        input_chars = _count_input_chars(args.context, iter_python_files)
+        print(f"Input context: {input_chars:,} characters.")
 
     url = build_url(
         repo,
@@ -158,7 +148,7 @@ def run_submit(args, iter_python_files) -> int:
         model=args.model,
         engine=args.engine,
         payload=payload,
-        input_context=input_context,
+        input_chars=input_chars,
         category=args.category,
         notes=args.notes,
     )
@@ -171,4 +161,12 @@ def run_submit(args, iter_python_files) -> int:
     if not _open_url(url):
         print("Could not auto-open browser. Open this URL manually:\n")
         print(url)
+    else:
+        print("Browser opened. Review the pre-filled form and click Submit.")
+        if payload_too_large:
+            print(
+                "\n⚠  Payload was too large to pre-fill. Paste the contents of:\n"
+                f"   {payload_path.resolve()}\n"
+                "into the 'JSON patch payload' field before submitting."
+            )
     return 0
