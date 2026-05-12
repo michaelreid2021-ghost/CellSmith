@@ -1,10 +1,12 @@
 """`cellsmith submit` — open a pre-filled GitHub issue in the browser.
 
-Reads your patch JSON, counts characters in any --context files you point at
-(locally, nothing uploaded), then opens a pre-filled GitHub issue form.
-Click submit. Done.
+Counts characters in any --context files you point at (locally, nothing
+uploaded), pre-fills the GitHub issue form with all metadata, and opens it.
+The payload JSON textarea is intentionally left for manual paste — GitHub's
+URL limit (~8 KB) is too small to survive URL-encoding a real JSON patch.
 
-What goes in the URL: handle / model / engine / category / payload / input_chars
+What goes in the URL: handle / model / engine / category / input_chars / notes
+What you paste manually: the JSON patch payload (one field, already open)
 What never leaves your machine: your source code
 """
 from __future__ import annotations
@@ -28,9 +30,6 @@ CATEGORY_LABEL = {
 }
 
 # GitHub rejects GETs over ~8 KB. Keep payload well under that.
-MAX_PAYLOAD_BYTES = 6_000
-
-
 def _count_input_chars(context_paths: Iterable[Path], iter_python_files) -> int:
     """Count total characters across all Python files. Source stays on disk."""
     total = 0
@@ -49,18 +48,18 @@ def build_url(
     handle: str,
     model: str,
     engine: str,
-    payload: str,
     input_chars: int,
     category: str | None = None,
     notes: str | None = None,
 ) -> str:
+    # Payload is intentionally excluded — URL-encoded JSON explodes past
+    # GitHub's ~8 KB server-side URL limit even for small patches.
     params = {
         "template": TEMPLATE,
         "labels": "high-score",
         "handle": handle,
         "model": model,
         "engine": engine,
-        "payload": payload,
         "input_chars": str(input_chars),
     }
     if category:
@@ -126,16 +125,6 @@ def run_submit(args, iter_python_files) -> int:
     if not payload_path.exists():
         logging.error(f"payload not found: {payload_path}")
         return 1
-    payload = payload_path.read_text(encoding="utf-8")
-
-    payload_too_large = len(payload.encode("utf-8")) > MAX_PAYLOAD_BYTES
-    if payload_too_large:
-        logging.warning(
-            f"Payload is {len(payload.encode('utf-8')):,} bytes "
-            f"(URL cap ~{MAX_PAYLOAD_BYTES:,} bytes). "
-            "Form will open without it — paste the JSON manually."
-        )
-        payload = ""
 
     input_chars = 0
     if args.context:
@@ -147,7 +136,6 @@ def run_submit(args, iter_python_files) -> int:
         handle=args.handle,
         model=args.model,
         engine=args.engine,
-        payload=payload,
         input_chars=input_chars,
         category=args.category,
         notes=args.notes,
@@ -163,10 +151,9 @@ def run_submit(args, iter_python_files) -> int:
         print(url)
     else:
         print("Browser opened. Review the pre-filled form and click Submit.")
-        if payload_too_large:
-            print(
-                "\n⚠  Payload was too large to pre-fill. Paste the contents of:\n"
-                f"   {payload_path.resolve()}\n"
-                "into the 'JSON patch payload' field before submitting."
-            )
+
+    print(
+        "\n📋 Paste your payload JSON into the 'JSON patch payload' field:\n"
+        f"   {payload_path.resolve()}"
+    )
     return 0
