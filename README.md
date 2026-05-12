@@ -163,9 +163,9 @@ project's X account with model-maker hashtags (e.g. `#GoogleDeepMind #Gemma`,
 applicable.
 
 <!-- LB:START -->
-| # | Handle | Score | Out | In | Lev | 🔧 | ➕ | ♻️ | Tier | Model | Engine |
-|---|--------|-------|-----|-----|-----|----|----|----|------|-------|--------|
-| _no submissions yet — be the first_ | | | | | | | | | | | |
+| # | Handle | Score | Nodes | In (chars) | Leverage | 🔧 | ➕ | ♻️ | Lint | Tier | Model | Engine |
+|---|--------|-------|-------|------------|----------|----|----|----|------|------|-------|--------|
+| 1 | meshak | 1107.0 | 738 | 339984 | 3.256 | 2 | 0 | 0 | ✅ | #1 unknown | gemini-3.1-pro | cell_patch |
 <!-- LB:END -->
 
 ## License

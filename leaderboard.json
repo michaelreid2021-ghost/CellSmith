@@ -1,1 +1,21 @@
-[]
+[
+  {
+    "rank": 1,
+    "rank_in_category": 1,
+    "handle": "meshak",
+    "score": 1107.0,
+    "nodes": 738,
+    "input_chars": 339984,
+    "leverage": 3.256,
+    "patches": 2,
+    "creates": 0,
+    "replaces": 0,
+    "revisions": 2,
+    "model": "gemini-3.1-pro",
+    "engine": "cell_patch",
+    "category": "unknown",
+    "lint_passed": true,
+    "personal_best": true,
+    "issue": 4
+  }
+]
