@@ -51,6 +51,54 @@ class CellAnnotator(ast.NodeVisitor):
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         self.visit_FunctionDef(node)
 
+    def visit_Module(self, node: ast.Module) -> None:
+        """Mark clusters of module-level code that aren't imports/funcs/classes.
+
+        These would otherwise be swallowed by a CELL_PATCH on the preceding
+        cell (which scans forward until the next marker — or EOF if there is
+        none).  We emit:
+          # %% [module:main_guard]  for `if __name__ == "__main__":` blocks
+          # %% [module:init]        for everything else (instantiations, etc.)
+        Multiple non-contiguous clusters of the latter get numbered:
+          module:init, module:init:2, module:init:3 …
+        """
+        self.generic_visit(node)
+
+        SKIP = (
+            ast.Import, ast.ImportFrom,
+            ast.FunctionDef, ast.AsyncFunctionDef,
+            ast.ClassDef,
+        )
+
+        init_count = 0
+        in_group = False
+
+        for stmt in node.body:
+            if isinstance(stmt, SKIP):
+                in_group = False
+                continue
+
+            # `if __name__ == "__main__":` always gets its own cell, even if
+            # we're already inside a module:init group.
+            is_main_guard = (
+                isinstance(stmt, ast.If)
+                and isinstance(stmt.test, ast.Compare)
+                and isinstance(stmt.test.left, ast.Name)
+                and stmt.test.left.id == "__name__"
+                and any(isinstance(op, ast.Eq) for op in stmt.test.ops)
+            )
+            if is_main_guard:
+                self.insertions.append((stmt.lineno, "# %% [module:main_guard]\n"))
+                in_group = False  # guard ends the current init group
+                continue
+
+            # Everything else: group consecutive runs under module:init[:N]
+            if not in_group:
+                in_group = True
+                init_count += 1
+                suffix = f":{init_count}" if init_count > 1 else ""
+                self.insertions.append((stmt.lineno, f"# %% [module:init{suffix}]\n"))
+
 def annotate_file(filepath: Path) -> None:
     if not filepath.exists():
         logging.error(f"File not found: {filepath}")
@@ -127,7 +175,7 @@ def annotate_file(filepath: Path) -> None:
         "#     {\n"
         "#       \"filename\": \"path/to/this/file.py\",\n"
         "#       \"revision_type\": \"CELL_PATCH\",  # Or \"REPLACE\", \"CELL_CREATE\"\n"
-        "#       \"cell_id\": \"func:my_function\",  # Match an exact marker (e.g. 'imports', 'func:x', 'method:Cls.x')\n"
+        "#       \"cell_id\": \"func:my_function\",  # Match an exact marker (e.g. 'imports', 'func:x', 'method:Cls.x', 'module:init', 'module:main_guard')\n"
         "#       \"code_content\": \"# %% [func:my_function]\\ndef my_function():\\n    pass\\n\"\n"
         "#     }\n"
         "#   ]\n"
