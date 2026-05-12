@@ -6,10 +6,8 @@ body:
   - type: markdown
     attributes:
       value: |
-        Paste the **entire JSON patch payload** your LLM produced (the same file
-        you fed to `cellsmith patch`). The Action will iterate every revision,
-        re-run `ast.walk` on each `code_content`, run `ruff check` on each one,
-        and sum a weighted score for the whole session.
+        Run `cellsmith submit your_patch.json --context your_source/` and it
+        fills this form automatically. Just hit Submit.
 
   - type: input
     id: handle
@@ -25,7 +23,7 @@ body:
     attributes:
       label: Model
       description: The LLM you used (honor system).
-      placeholder: e.g. qwen-3.9-4b
+      placeholder: e.g. gemma-3-4b
     validations:
       required: true
 
@@ -42,7 +40,6 @@ body:
     id: category
     attributes:
       label: Model size category (self-declared, honor system)
-      description: Used to compute your rank within a tier. Pick the bracket your model fits.
       options:
         - "<4B"
         - "<10B"
@@ -54,31 +51,73 @@ body:
       required: true
 
   - type: input
+    id: score
+    attributes:
+      label: Score
+      description: Computed locally by cellsmith submit.
+      placeholder: e.g. 3847.5
+    validations:
+      required: true
+
+  - type: input
+    id: nodes
+    attributes:
+      label: Output nodes
+      description: Total AST nodes across all revised cells.
+      placeholder: e.g. 2565
+    validations:
+      required: true
+
+  - type: input
     id: input_chars
     attributes:
       label: Input context size (characters)
-      description: >
-        Total character count of the source file(s) you handed to the LLM.
-        Run `cellsmith submit` and it counts this for you — or paste
-        `wc -m yourfile.py` / `(Get-Content yourfile.py | Measure-Object -Character).Characters`.
-        Honor system, like model name.
+      description: Total chars of source you handed the LLM. Counted locally by cellsmith submit.
       placeholder: e.g. 18432
     validations:
       required: true
 
-  - type: textarea
-    id: payload
+  - type: input
+    id: patches
     attributes:
-      label: JSON patch payload
-      description: The full payload — must contain a `revisions` array.
-      render: json
-      placeholder: |
-        {
-          "revisions": [
-            {"filename": "foo.py", "revision_type": "CELL_PATCH", "cell_id": "func:bar", "code_content": "..."},
-            {"filename": "foo.py", "revision_type": "CELL_CREATE", "code_content": "..."}
-          ]
-        }
+      label: CELL_PATCH count
+      placeholder: e.g. 9
+    validations:
+      required: true
+
+  - type: input
+    id: creates
+    attributes:
+      label: CELL_CREATE count
+      placeholder: e.g. 2
+    validations:
+      required: true
+
+  - type: input
+    id: replaces
+    attributes:
+      label: REPLACE count
+      placeholder: e.g. 1
+    validations:
+      required: true
+
+  - type: input
+    id: revisions
+    attributes:
+      label: Total revisions
+      placeholder: e.g. 12
+    validations:
+      required: true
+
+  - type: dropdown
+    id: lint_passed
+    attributes:
+      label: Ruff lint passed (local check)
+      description: cellsmith submit runs ruff on your patched files and fills this in.
+      options:
+        - "yes"
+        - "no"
+      default: 0
     validations:
       required: true
 
@@ -86,6 +125,6 @@ body:
     id: prompt_notes
     attributes:
       label: Prompt notes (optional)
-      description: Brag about the prompt strategy / context window / setup.
+      description: Brag about your prompt strategy / setup.
     validations:
       required: false

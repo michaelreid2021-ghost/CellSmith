@@ -1,20 +1,16 @@
-"""Parse a 'high-score' issue, verify the entire patch session, update files.
+"""Parse a 'high-score' issue and update the leaderboard.
 
-Triggered by .github/workflows/leaderboard.yml. Reads the issue body from env,
-extracts the JSON patch payload (revisions[]), then for each revision re-runs
-ast.walk on code_content and runs ruff check. Sums a weighted session score
-and tallies counts per tool. Updates leaderboard.json + README table. On any
-verification failure, exits non-zero so the workflow posts a rejection comment.
+Triggered by .github/workflows/leaderboard.yml. Reads the pre-computed
+session stats from the issue body (score, nodes, tool counts, input_chars)
+and inserts them into leaderboard.json + README table. Honor system —
+same trust level as the model/engine fields.
 """
 from __future__ import annotations
 
-import ast
 import json
 import os
 import re
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -22,10 +18,7 @@ LEADERBOARD = REPO_ROOT / "leaderboard.json"
 README = REPO_ROOT / "README.md"
 LB_START = "<!-- LB:START -->"
 LB_END = "<!-- LB:END -->"
-TOOL_MULT = {"CELL_PATCH": 1.5, "CELL_CREATE": 1.0, "REPLACE": 0.5}
 
-# Substring → hashtag string for tweet model attribution.
-# Order matters: more specific keys first.
 MODEL_HASHTAGS = [
     ("claude", "#Anthropic #Claude"),
     ("gemma", "#GoogleDeepMind #Gemma"),
@@ -55,9 +48,7 @@ def write_tweet(*, handle, model, engine, score, leverage, patches, creates,
     repo = os.environ.get("GITHUB_REPOSITORY", "michaelreid2021-ghost/CellSmith")
     issue_url = f"https://github.com/{repo}/issues/{issue_num}"
     pb_prefix = "🏆 PERSONAL BEST! " if is_pb else "🔥 New entry: "
-    cat_line = ""
-    if category and category != "unknown":
-        cat_line = f"\n→ #{rank_in_cat} in {category} tier"
+    cat_line = f"\n→ #{rank_in_cat} in {category} tier" if category and category != "unknown" else ""
     ops = []
     if patches:
         ops.append(f"{patches}× CELL_PATCH")
@@ -75,7 +66,6 @@ def write_tweet(*, handle, model, engine, score, leverage, patches, creates,
         f"{model_hashtags(model)} #CellSmith #LLM\n"
         f"{issue_url}"
     )
-    # X hard limit is 280; truncate gracefully if needed.
     if len(tweet) > 280:
         tweet = tweet[:277] + "…"
     Path("tweet_text.txt").write_text(tweet, encoding="utf-8")
@@ -98,19 +88,23 @@ def extract_field(body: str, header: str) -> str | None:
     if not m:
         return None
     val = m.group(1).strip()
-    if val.startswith("```"):
-        val = re.sub(r"^```\w*\n", "", val)
-        val = re.sub(r"\n```$", "", val).strip()
     return val or None
 
 
-def ruff_ok(code: str) -> tuple[bool, str]:
-    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False, encoding="utf-8") as tf:
-        tf.write(code)
-        tmp_path = tf.name
-    res = subprocess.run(["ruff", "check", tmp_path], capture_output=True, text=True)
-    os.unlink(tmp_path)
-    return res.returncode == 0, res.stdout + res.stderr
+def parse_int(body: str, header: str, default: int = 0) -> int:
+    raw = extract_field(body, header) or str(default)
+    try:
+        return int(raw.strip().replace(",", ""))
+    except ValueError:
+        return default
+
+
+def parse_float(body: str, header: str, default: float = 0.0) -> float:
+    raw = extract_field(body, header) or str(default)
+    try:
+        return float(raw.strip().replace(",", ""))
+    except ValueError:
+        return default
 
 
 def main() -> None:
@@ -126,79 +120,45 @@ def main() -> None:
     category = extract_field(body, "Model size category (self-declared, honor system)") or "unknown"
     if category not in ("<4B", "<10B", "<30B", "frontier", "unknown"):
         category = "unknown"
-    input_chars_raw = extract_field(body, "Input context size (characters)") or "0"
-    try:
-        input_chars = int(input_chars_raw.strip().replace(",", ""))
-    except ValueError:
-        fail(f"input_chars is not an integer: {input_chars_raw!r}")
 
-    payload_raw = extract_field(body, "JSON patch payload")
-    if not payload_raw:
-        fail("no JSON patch payload found")
+    score = parse_float(body, "Score")
+    nodes = parse_int(body, "Output nodes")
+    input_chars = parse_int(body, "Input context size (characters)")
+    patches = parse_int(body, "CELL_PATCH count")
+    creates = parse_int(body, "CELL_CREATE count")
+    replaces = parse_int(body, "REPLACE count")
+    revisions = parse_int(body, "Total revisions")
 
-    try:
-        payload = json.loads(payload_raw)
-    except json.JSONDecodeError as e:
-        fail(f"payload JSON did not parse: {e}")
+    lint_raw = extract_field(body, "Ruff lint passed (local check)") or "no"
+    lint_passed = lint_raw.strip().lower() == "yes"
 
-    revisions = payload.get("revisions", []) or []
-    if not revisions:
-        fail("payload has no `revisions` array (or it's empty)")
+    if score <= 0:
+        fail("score must be greater than zero")
+    if revisions <= 0:
+        fail("total revisions must be greater than zero")
 
-    counts = {"CELL_PATCH": 0, "CELL_CREATE": 0, "REPLACE": 0}
-    total_nodes = 0
-    total_score = 0.0
-    rejections = []
+    leverage = round(score / input_chars * 1000, 4) if input_chars else 0.0
 
-    for i, rev in enumerate(revisions):
-        tool = rev.get("revision_type")
-        code = rev.get("code_content", "")
-        if tool not in TOOL_MULT:
-            rejections.append(f"revision[{i}]: unknown tool '{tool}'")
-            continue
-        if not code.strip():
-            rejections.append(f"revision[{i}]: empty code_content")
-            continue
-        try:
-            nodes = len(list(ast.walk(ast.parse(code))))
-        except SyntaxError as e:
-            rejections.append(f"revision[{i}] ({tool}): syntax error: {e}")
-            continue
-        ok, ruff_out = ruff_ok(code)
-        if not ok:
-            snippet = ruff_out.strip().splitlines()[:5]
-            rejections.append(f"revision[{i}] ({tool}): ruff failed:\n" + "\n".join(snippet))
-            continue
-        counts[tool] += 1
-        total_nodes += nodes
-        total_score += nodes * TOOL_MULT[tool]
-
-    if rejections:
-        fail("one or more revisions failed verification:\n\n" + "\n\n".join(rejections))
-
-    total_score = round(total_score, 2)
-    leverage = round(total_score / input_chars, 4) if input_chars else 0.0
-
-    # Load existing board BEFORE appending so we can detect personal best
     board = json.loads(LEADERBOARD.read_text(encoding="utf-8")) if LEADERBOARD.exists() else []
     prior_pb = max((e["score"] for e in board if e.get("handle") == handle), default=0.0)
-    is_personal_best = total_score > prior_pb
+    is_personal_best = score > prior_pb
 
     entry = {
         "rank": None,
         "rank_in_category": None,
         "handle": handle,
-        "score": total_score,
-        "nodes": total_nodes,
+        "score": score,
+        "nodes": nodes,
         "input_chars": input_chars,
         "leverage": leverage,
-        "patches": counts["CELL_PATCH"],
-        "creates": counts["CELL_CREATE"],
-        "replaces": counts["REPLACE"],
-        "revisions": len(revisions),
+        "patches": patches,
+        "creates": creates,
+        "replaces": replaces,
+        "revisions": revisions,
         "model": model,
         "engine": engine,
         "category": category,
+        "lint_passed": lint_passed,
         "personal_best": is_personal_best,
         "issue": int(issue_num) if str(issue_num).isdigit() else issue_num,
     }
@@ -208,8 +168,8 @@ def main() -> None:
     board = board[:50]
     for i, e in enumerate(board, 1):
         e["rank"] = i
-    # Per-category rank (only across the kept top-50; cheap)
-    cat_counter = {}
+
+    cat_counter: dict[str, int] = {}
     for e in board:
         c = e.get("category", "unknown")
         cat_counter[c] = cat_counter.get(c, 0) + 1
@@ -218,8 +178,8 @@ def main() -> None:
     LEADERBOARD.write_text(json.dumps(board, indent=2) + "\n", encoding="utf-8")
 
     rows = [
-        "| # | Handle | Score | Out | In | Lev | 🔧 | ➕ | ♻️ | Tier | Model | Engine |",
-        "|---|--------|-------|-----|-----|-----|----|----|----|------|-------|--------|",
+        "| # | Handle | Score | Nodes | In (chars) | Leverage | 🔧 | ➕ | ♻️ | Lint | Tier | Model | Engine |",
+        "|---|--------|-------|-------|------------|----------|----|----|----|------|------|-------|--------|",
     ]
     for e in board:
         cat_rank = e.get("rank_in_category")
@@ -229,6 +189,7 @@ def main() -> None:
             f"| {e['rank']} | {e['handle']} | {e['score']} | {e['nodes']} | "
             f"{e.get('input_chars', '?')} | {e.get('leverage', '?')} | "
             f"{e['patches']} | {e['creates']} | {e['replaces']} | "
+            f"{'✅' if e.get('lint_passed') else '⚠️'} | "
             f"{cat_cell} | {e['model']} | {e['engine']} |"
         )
     table = "\n".join(rows)
@@ -248,23 +209,18 @@ def main() -> None:
     rank = next(e["rank"] for e in board if e["issue"] == entry["issue"])
     rank_in_cat = next(e["rank_in_category"] for e in board if e["issue"] == entry["issue"])
 
-    # Build tweet text for the X-poster step (which soft-fails if creds missing).
     write_tweet(
-        handle=handle, model=model, engine=engine, score=total_score,
-        leverage=leverage, patches=counts["CELL_PATCH"],
-        creates=counts["CELL_CREATE"], replaces=counts["REPLACE"],
+        handle=handle, model=model, engine=engine, score=score,
+        leverage=leverage, patches=patches, creates=creates, replaces=replaces,
         rank=rank, rank_in_cat=rank_in_cat, category=category,
         is_pb=is_personal_best, issue_num=issue_num,
     )
 
     succeed(
-        f"Verified! **{handle}** ranked **#{rank}** with score **{total_score}** "
-        f"across {len(revisions)} revision(s) — "
-        f"{counts['CELL_PATCH']}× CELL_PATCH, "
-        f"{counts['CELL_CREATE']}× CELL_CREATE, "
-        f"{counts['REPLACE']}× REPLACE. "
-        f"Output: {total_nodes} nodes from {input_chars:,} input chars "
-        f"(leverage {leverage})."
+        f"**{handle}** ranked **#{rank}** with score **{score}** "
+        f"across {revisions} revision(s) — "
+        f"{patches}× CELL_PATCH, {creates}× CELL_CREATE, {replaces}× REPLACE. "
+        f"{nodes} output nodes, {input_chars:,} input chars, leverage {leverage}."
     )
 
 
