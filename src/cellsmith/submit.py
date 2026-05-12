@@ -220,6 +220,25 @@ def run_submit(args, iter_python_files) -> int:
     input_chars = 0
     if args.context:
         input_chars = _count_input_chars(args.context, iter_python_files)
+    else:
+        # Fall back to counting chars from the files named in the patch itself.
+        try:
+            data = json.loads(payload_path.read_text(encoding="utf-8"))
+            touched = {
+                target_dir / rev["filename"]
+                for rev in data.get("revisions", [])
+                if rev.get("filename")
+            }
+            for p in touched:
+                if p.exists():
+                    try:
+                        input_chars += len(p.read_text(encoding="utf-8"))
+                    except OSError:
+                        pass
+            if input_chars:
+                print(f"Input context: {input_chars:,} chars (auto-detected from patched files)")
+        except (OSError, json.JSONDecodeError):
+            pass
 
     leverage = round(stats["score"] / input_chars * 1000, 2) if input_chars else 0.0
 
