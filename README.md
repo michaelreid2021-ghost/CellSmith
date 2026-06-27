@@ -25,6 +25,10 @@ with a stable `cell_id`. The model returns a tiny JSON like:
     {"filename": "auth.py", "revision_type": "CELL_PATCH",
      "cell_id": "method:UserService.validate",
      "code_content": "# %% [method:UserService.validate]\n    def validate(self, ...):\n        ..."}
+  ],
+  "changelog": [
+    {"change_type": "bug_fix",
+     "summary": "validate() now rejects empty bearer tokens before hitting the DB."}
   ]
 }
 ```
@@ -59,23 +63,6 @@ the model can speak fluently, and a tool boring enough not to fight you.
   any file (JSON, TOML, Markdown, configs), so an LLM can drop an entirely new
   `pyproject.toml` or rewrite a `schema.json` in the same payload.
 
-## Why a leaderboard?
-
-Because this is the kind of tooling whose ceiling is set by **prompting and
-model choice**, not by the framework. There's no "official" right way to
-prompt an LLM into landing a 74-revision payload — and the surprising answers
-(maybe a 4B local model with a clever skeleton trick beats a frontier model
-with a lazy prompt) are the *interesting* answers.
-
-The leaderboard makes those answers visible. The scoring is intentionally
-passive (the LLM never sees the metric — see `src/cellsmith/telemetry.py`
-docstring, then re-read [Goodhart](https://en.wikipedia.org/wiki/Goodhart%27s_law)
-and never tell it). What gets ranked is what the human + model pair actually
-landed: how dense, how surgical, against how much input context.
-
-If a 4B model with a hand-crafted skeleton tops `patch_tuesday.json`'s score,
-that's worth knowing. If frontier models always win, that's worth knowing too.
-
 ## Install
 
 ```bash
@@ -101,14 +88,7 @@ cellsmith patch patch.json .
 # 3. Roll back if the patch was bad
 cellsmith rollback patch.json .
 
-# 4. (Optional) Submit to the leaderboard with one command — opens a
-#    pre-filled GitHub issue in your browser. Click submit. Done.
-cellsmith submit patch.json --context src/ \
-    --handle "your-handle" \
-    --model "gemma-3-4b" --engine "mlx" \
-    --category tiny  # tiny=<4B, small=<10B, medium=<30B, frontier, unknown
-
-# 5. When you're done, strip cell markers + schema header to get plain code back
+# 4. When you're done, strip cell markers + schema header to get plain code back
 cellsmith strip path/to/file.py                # asks for confirmation
 cellsmith strip . -y                           # whole project, skip prompt
 cellsmith strip path/to/file.py --prompt-only  # keep markers, drop schema only
@@ -118,55 +98,56 @@ cellsmith strip path/to/file.py --markers-only # keep schema, drop markers only
 👉 **[examples/hello_world/WALKTHROUGH.md](examples/hello_world/WALKTHROUGH.md)** —
 end-to-end tour: annotate a trivial file, ask any chat-UI LLM to make it
 "the most complex Hello World imaginable" (no schema explanation needed —
-the file teaches the model), apply the patch, optionally submit to the
-leaderboard.
+the file teaches the model), apply the patch.
 
 > Annotation is Python-only (it walks the AST). Patching can target **any**
 > file via `REPLACE` (JSON, TOML, Markdown, anything), and `CELL_PATCH` /
 > `CELL_CREATE` work on any file that has cell markers — but for now only
 > Python files get marker generation out of the box.
 
-Every patch run silently appends a row to `patch_telemetry.jsonl` in the
-working directory — your private brag log. Set `CELLSMITH_MODEL` and
-`CELLSMITH_ENGINE` env vars before running so the telemetry knows which model
-got the credit.
+## Required: the `changelog` block
 
-## 🏆 Leaderboard
+Every patch payload **must** include a `changelog` array with at least one
+entry. `cellsmith patch` is a **blocking gate** — payloads missing or
+malformed in this block are rejected before any disk writes happen.
 
-Click **Issues → New issue → 🏆 Submit High Score** and paste your full JSON
-patch payload (the one you fed to `cellsmith patch`). A GitHub Action iterates
-every revision, re-runs `ast.walk` on each `code_content`, runs `ruff check`
-on each, and ranks you by the **summed weighted score across the whole
-session**. You'll get tallies of how many CELL_PATCH / CELL_CREATE / REPLACE
-ops your LLM landed in one shot. Cheaters and broken code get rejected with
-a comment.
+```json
+{
+  "revisions": [ ... ],
+  "changelog": [
+    {
+      "change_type": "bug_fix",
+      "summary": "Rate limiter now uses a monotonic clock so suspends don't reset the window.",
+      "details": [
+        "Replaced time.time() with time.monotonic() in RateLimiter.tick()",
+        "Added regression test for clock-skew scenario"
+      ]
+    }
+  ]
+}
+```
 
-Per-revision score is `nodes × tool_multiplier`, summed across the session.
-We also count the **input context** (the source you handed the LLM) and show
-**Leverage** = `output_score / input_nodes` — i.e. how much logic the model
-produced per node of context it had to comprehend. Tiny model + huge codebase
-+ surgical CELL_PATCH = absurdly high leverage.
+| Field | Required | Notes |
+|---|---|---|
+| `change_type` | yes | One of: `new_feature`, `correcting_implementation`, `bug_fix`, `refactor`, `schema_migration` |
+| `summary` | yes | One concise affirmative sentence — describe the **final state**, not past mistakes |
+| `details` | no | Array of strings, granular technical bullets |
+| `timestamp` | no | ISO-8601 UTC; filled in by `cellsmith patch` if omitted |
+| `author` | no | Free-form model/agent identifier |
 
-| Tool | Multiplier | Why |
-|------|------------|-----|
-| `CELL_PATCH` | 1.5× | Surgical — rewards laconic precision |
-| `CELL_CREATE` | 1.0× | Standard append |
-| `REPLACE` | 0.5× | Brute-force rewrites get penalized |
+Accepted entries are appended one-per-line to `CHANGELOG.cellsmith.jsonl` at
+the patch target root — a structured, append-only project history you can
+read with `jq`, render to Markdown, or feed back to the model as context for
+later patches.
 
-Honor system on `model` / `engine` / `category` (unverifiable). Math is reproducible.
+## For chat-agent integrators
 
-Submitters self-declare a **size category** — `<4B`, `<10B`, `<30B`, `frontier`,
-or `unknown` — so a 4B local model can compete on its own tier without being
-buried by frontier APIs. Each accepted submission also auto-posts to the
-project's X account with model-maker hashtags (e.g. `#GoogleDeepMind #Gemma`,
-`#MetaAI #Llama`, `#Anthropic #Claude`) and a 🏆 PERSONAL BEST flag when
-applicable.
-
-<!-- LB:START -->
-| # | Handle | Score | Nodes | In (chars) | Leverage | 🔧 | ➕ | ♻️ | Lint | Tier | Model | Engine |
-|---|--------|-------|-------|------------|----------|----|----|----|------|------|-------|--------|
-| 1 | meshak | 1107.0 | 738 | 339984 | 3.256 | 2 | 0 | 0 | ✅ | #1 unknown | gemini-3.1-pro | cell_patch |
-<!-- LB:END -->
+If you're wiring CellSmith up to a structured-output chat agent (Gemini
+`responseSchema`, OpenAI structured outputs, etc.), the canonical OpenAPI
+spec for the response shape lives in
+[examples/response_schema.json](examples/response_schema.json). It's the
+single source of truth for `content` / `revisions` / `artifacts` /
+`changelog` / `task_update`.
 
 ## License
 

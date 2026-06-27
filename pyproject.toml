@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "cellsmith"
 version = "0.1.0"
-description = "AST-based cell-aware code patcher for LLM-driven Python edits, with a passive scoring system."
+description = "AST-based cell-aware code patcher for LLM-driven Python edits, with a structured per-payload changelog."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }

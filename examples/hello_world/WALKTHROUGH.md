@@ -1,8 +1,7 @@
-# Walkthrough: From "Hello, world!" to leaderboard entry
+# Walkthrough: From "Hello, world!" to surgical LLM patch
 
 This is the smallest possible end-to-end tour of CellSmith. You'll annotate a
-trivial file, ask any LLM to make it absurd, apply the patch, and (if you
-want) submit the run to the leaderboard.
+trivial file, ask any LLM to make it absurd, and apply the patch.
 
 The whole point: **you never explain the patch schema in your prompt.** The
 embedded `# %% [ai_schema:instructions]` block does that for you. You only
@@ -73,11 +72,21 @@ The model returns a JSON object that looks like:
       "cell_id": "func:greet",
       "code_content": "# %% [func:greet]\ndef greet(name):\n    ...absurd implementation...\n"
     }
+  ],
+  "changelog": [
+    {
+      "change_type": "new_feature",
+      "summary": "greet() now sings the user's name in three-part harmony with ANSI color."
+    }
   ]
 }
 ```
 
-Save it as `patch.json` in the repo root.
+Note the **`changelog` block is required** — `cellsmith patch` rejects any
+payload without it. The embedded schema in the annotated file already tells
+the model this, so you don't need to remind it.
+
+Save the response as `patch.json` in the repo root.
 
 ## 4. Apply
 
@@ -99,25 +108,11 @@ roll back:
 cellsmith rollback patch.json .
 ```
 
-## 5. (Optional) Submit to the leaderboard
+After `cellsmith patch` runs you'll also have a fresh entry appended to
+`CHANGELOG.cellsmith.jsonl` at the repo root — your structured project
+history, one JSON object per line.
 
-Set the model + engine env vars *before* running step 4 next time, so the
-telemetry log records who got the credit:
-
-```bash
-export CELLSMITH_MODEL="gpt-5"
-export CELLSMITH_ENGINE="chatgpt-web"
-cellsmith patch patch.json .
-```
-
-Then open a new issue with the **🏆 Submit High Score** template and paste:
-- the contents of `patch.json` (your output)
-- the annotated `hello.py` (your input context)
-
-The Action verifies node counts, runs `ruff check` per revision, and ranks
-you. Done.
-
-## 6. Clean up
+## 5. Clean up
 
 When you want the file back to plain Python:
 

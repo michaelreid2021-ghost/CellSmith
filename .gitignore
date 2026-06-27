@@ -1,5 +1,4 @@
-# CellSmith local brag log + patch backups
-patch_telemetry.jsonl
+# CellSmith patch backups (CHANGELOG.cellsmith.jsonl is intentionally tracked)
 *.bak
 previous_patches/
 

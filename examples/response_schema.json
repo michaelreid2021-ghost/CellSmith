@@ -1,0 +1,129 @@
+{
+  "type": "OBJECT",
+  "properties": {
+    "content": {
+      "type": "STRING",
+      "description": "The conversational response, explanations, reasoning, and standard chat text. Use Markdown."
+    },
+    "revisions": {
+      "type": "ARRAY",
+      "description": "Surgical modifications to existing files.",
+      "items": {
+        "type": "OBJECT",
+        "properties": {
+          "filename": {
+            "type": "STRING"
+          },
+          "revision_type": {
+            "type": "STRING",
+            "enum": [
+              "REPLACE",
+              "CELL_PATCH",
+              "CELL_CREATE"
+            ]
+          },
+          "cell_id": {
+            "type": "STRING",
+            "description": "The exact identifier for the target cell (e.g., 'func:my_func'). Required for CELL_PATCH."
+          },
+          "code_content": {
+            "type": "STRING",
+            "description": "The source code. For CELL_PATCH/CREATE, the FIRST line MUST be the marker: '# %% [<cell_id>]'. Provide FULL logic; never redact for brevity."
+          }
+        },
+        "required": [
+          "filename",
+          "revision_type",
+          "code_content"
+        ]
+      }
+    },
+    "artifacts": {
+      "type": "ARRAY",
+      "description": "A list of new files to be created. Use this for proposing entirely new artifacts that do not currently exist.",
+      "items": {
+        "type": "OBJECT",
+        "properties": {
+          "filename": {
+            "type": "STRING",
+            "description": "The target filename for the new artifact (e.g., 'new_utils.py'). This path should be relative to the project root."
+          },
+          "code_content": {
+            "type": "STRING",
+            "description": "The full source code for the new file."
+          },
+          "description": {
+            "type": "STRING",
+            "description": "A very brief 3-5 word label for this new file."
+          }
+        },
+        "required": [
+          "filename",
+          "code_content"
+        ]
+      }
+    },
+    "changelog": {
+      "type": "ARRAY",
+      "description": "BLOCKING GATE: every patch response MUST include at least one entry. Classify the work strictly using `change_type`. `summary` is affirmative documentation of the final state — not a recount of past conversational errors. `cellsmith patch` rejects payloads with a missing or malformed changelog and appends accepted entries to CHANGELOG.cellsmith.jsonl at the target root.",
+      "items": {
+        "type": "OBJECT",
+        "properties": {
+          "timestamp": {
+            "type": "STRING",
+            "format": "date-time",
+            "description": "ISO-8601 UTC timestamp. If omitted, `cellsmith patch` fills it with the apply-time timestamp."
+          },
+          "author": {
+            "type": "STRING",
+            "description": "Optional author/model identifier."
+          },
+          "change_type": {
+            "type": "STRING",
+            "enum": [
+              "new_feature",
+              "correcting_implementation",
+              "bug_fix",
+              "refactor",
+              "schema_migration"
+            ],
+            "description": "Explicit category of the modification."
+          },
+          "summary": {
+            "type": "STRING",
+            "description": "Concise single-sentence overview of the final state achieved."
+          },
+          "details": {
+            "type": "ARRAY",
+            "items": {
+              "type": "STRING"
+            },
+            "description": "Granular bulleted technical modifications or impacted fields."
+          }
+        },
+        "required": [
+          "change_type",
+          "summary"
+        ]
+      }
+    },
+    "task_update": {
+      "type": "OBJECT",
+      "description": "An optional update to the task manager state. Only use when in tasking mode.",
+      "properties": {
+        "memory_content": {
+          "type": "STRING",
+          "description": "A concise summary of the work done for the current step."
+        },
+        "mark_step_complete": {
+          "type": "BOOLEAN",
+          "description": "Set to true if the current step is fully completed and the plan should advance."
+        }
+      }
+    }
+  },
+  "required": [
+    "content",
+    "changelog"
+  ]
+}

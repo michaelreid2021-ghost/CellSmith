@@ -4,15 +4,20 @@ import json
 import logging
 import shutil
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Tuple
 
-try:
-    from cellsmith import telemetry
-except ImportError:
-    import telemetry  # fallback for direct script use
-
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+CHANGELOG_FILE = "CHANGELOG.cellsmith.jsonl"
+VALID_CHANGE_TYPES = frozenset({
+    "new_feature",
+    "correcting_implementation",
+    "bug_fix",
+    "refactor",
+    "schema_migration",
+})
 
 class CellAnnotator(ast.NodeVisitor):
     def __init__(self):
@@ -178,8 +183,20 @@ def annotate_file(filepath: Path) -> None:
         "#       \"cell_id\": \"func:my_function\",  # Match an exact marker (e.g. 'imports', 'func:x', 'method:Cls.x', 'module:init', 'module:main_guard')\n"
         "#       \"code_content\": \"# %% [func:my_function]\\ndef my_function():\\n    pass\\n\"\n"
         "#     }\n"
+        "#   ],\n"
+        "#   \"changelog\": [\n"
+        "#     {\n"
+        "#       \"change_type\": \"bug_fix\",   # Required. One of: new_feature, correcting_implementation, bug_fix, refactor, schema_migration\n"
+        "#       \"summary\": \"Concise single-sentence description of the final state achieved.\",\n"
+        "#       \"details\": [\"Optional bullet of granular technical change.\"]\n"
+        "#     }\n"
         "#   ]\n"
         "# }\n"
+        "#\n"
+        "# BLOCKING GATE: every patch response MUST include at least one `changelog`\n"
+        "# entry. Classify your work strictly using the `change_type` enum. Write the\n"
+        "# `summary` as affirmative documentation of the final state — not a recount\n"
+        "# of past conversational errors.\n"
         "#\n"
         "# Choose the most efficient tool for the job (the user pays per token):\n"
         "#   * REPLACE     : For new files, total rewrites, or files under 50 lines.\n"
@@ -209,7 +226,55 @@ def create_backup(filepath: Path) -> None:
         shutil.copy2(filepath, backup_path)
         logging.info(f"Created backup: {backup_path}")
 
+def _validate_changelog(entries: list) -> list:
+    """Validate changelog entries from a patch payload. Raise ValueError on any issue.
+
+    Returns the normalized list (timestamp filled where missing, in UTC).
+    """
+    if not isinstance(entries, list) or not entries:
+        raise ValueError(
+            "patch payload missing required `changelog` array (must contain at "
+            "least one entry with change_type + summary)."
+        )
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    normalized = []
+    for i, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            raise ValueError(f"changelog[{i}] is not an object")
+        change_type = entry.get("change_type")
+        summary = entry.get("summary")
+        if change_type not in VALID_CHANGE_TYPES:
+            raise ValueError(
+                f"changelog[{i}].change_type must be one of "
+                f"{sorted(VALID_CHANGE_TYPES)}; got {change_type!r}"
+            )
+        if not isinstance(summary, str) or not summary.strip():
+            raise ValueError(f"changelog[{i}].summary must be a non-empty string")
+        normalized.append({
+            "timestamp": entry.get("timestamp") or now,
+            "author": entry.get("author"),
+            "change_type": change_type,
+            "summary": summary.strip(),
+            "details": entry.get("details") or [],
+        })
+    return normalized
+
+
+def _write_changelog(entries: list, target_dir: Path) -> None:
+    """Append validated entries (one JSON object per line) to the project changelog."""
+    target_dir.mkdir(parents=True, exist_ok=True)
+    path = target_dir / CHANGELOG_FILE
+    with open(path, "a", encoding="utf-8") as f:
+        for entry in entries:
+            f.write(json.dumps(entry) + "\n")
+    logging.info(f"Recorded {len(entries)} changelog entry(s) in {path}")
+
+
 def apply_revisions(data: dict, target_dir: Path) -> None:
+    # Blocking gate: enforce the schema's changelog requirement before any disk writes.
+    changelog_entries = _validate_changelog(data.get("changelog"))
+
     artifacts = data.get("artifacts", [])
     for artifact in artifacts:
         target_file = target_dir / artifact["filename"]
@@ -233,7 +298,6 @@ def apply_revisions(data: dict, target_dir: Path) -> None:
             with open(target_file, "w", encoding="utf-8") as f:
                 f.write(code)
             logging.info(f"Replaced entire file: {target_file}")
-            telemetry.record(telemetry.score_patch(code, "REPLACE"), file=str(target_file))
 
         elif rev_type == "CELL_PATCH":
             cell_id = rev.get("cell_id")
@@ -264,7 +328,7 @@ def apply_revisions(data: dict, target_dir: Path) -> None:
                 stripped = lines[i].strip()
                 if is_start_block:
                     if stripped == expected_end_marker:
-                        end_idx = i + 1 
+                        end_idx = i + 1
                         break
                 else:
                     if stripped.startswith("# %% ["):
@@ -275,18 +339,18 @@ def apply_revisions(data: dict, target_dir: Path) -> None:
                 code += "\n"
 
             new_lines = lines[:start_idx] + [code] + lines[end_idx:]
-            
+
             with open(target_file, "w", encoding="utf-8") as f:
                 f.writelines(new_lines)
-            
+
             logging.info(f"Patched cell {cell_id} in {target_file}")
-            telemetry.record(telemetry.score_patch(code, "CELL_PATCH"), file=str(target_file), cell_id=cell_id)
 
         elif rev_type == "CELL_CREATE":
             with open(target_file, "a", encoding="utf-8") as f:
                 f.write("\n" + code + "\n")
             logging.info(f"Appended new cell to {target_file}")
-            telemetry.record(telemetry.score_patch(code, "CELL_CREATE"), file=str(target_file), cell_id=rev.get("cell_id"))
+
+    _write_changelog(changelog_entries, target_dir)
 
 def strip_file(
     filepath: Path,
@@ -425,17 +489,6 @@ def main() -> None:
     patch_parser.add_argument("json_file", type=Path, help="JSON response file")
     patch_parser.add_argument("target_dir", type=Path, default=Path("."), nargs="?", help="Root directory for patching")
 
-    submit_parser = subparsers.add_parser("submit", help="Open a pre-filled GitHub issue to submit a leaderboard entry")
-    submit_parser.add_argument("payload", type=Path, help="JSON patch payload (the file you fed to `cellsmith patch`)")
-    submit_parser.add_argument("--context", type=Path, action="append", help="Path to annotated source the LLM saw (file or dir; repeatable)")
-    submit_parser.add_argument("--handle", required=True, help="Display name on the leaderboard")
-    submit_parser.add_argument("--model", required=True, help="Model name, e.g. gemma-3-4b")
-    submit_parser.add_argument("--engine", required=True, help="Inference engine, e.g. mlx, llama.cpp, anthropic-api")
-    submit_parser.add_argument("--category", choices=["tiny", "small", "medium", "frontier", "unknown"],
-                               help="Self-declared model size bracket: tiny=<4B, small=<10B, medium=<30B, frontier, unknown")
-    submit_parser.add_argument("--notes", help="Free-form prompt-engineering notes (optional)")
-    submit_parser.add_argument("--print-only", action="store_true", help="Print the URL instead of opening the browser")
-
     strip_parser = subparsers.add_parser("strip", help="Remove cell markers and/or the AI schema prompt header")
     strip_parser.add_argument("target", type=Path, help="Target Python file or directory")
     strip_parser.add_argument("--prompt-only", action="store_true", help="Only strip the AI schema prompt header")
@@ -471,12 +524,6 @@ def main() -> None:
         for f in files:
             annotate_file(f)
         logging.info(f"Processed {len(files)} file(s)")
-    elif args.command == "submit":
-        try:
-            from cellsmith.submit import run_submit
-        except ImportError:
-            from submit import run_submit  # script-mode fallback
-        sys.exit(run_submit(args, iter_python_files))
     elif args.command == "strip":
         if not args.target.exists():
             logging.error(f"Target does not exist: {args.target}")
@@ -521,7 +568,11 @@ def main() -> None:
                 sys.exit(1)
                 
         if args.command == "patch":
-            apply_revisions(data, args.target_dir)
+            try:
+                apply_revisions(data, args.target_dir)
+            except ValueError as e:
+                logging.error(f"patch rejected: {e}")
+                sys.exit(2)
         elif args.command == "rollback":
             rollback_revisions(data, args.target_dir)
 
