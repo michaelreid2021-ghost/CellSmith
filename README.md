@@ -72,7 +72,7 @@ pip install -e .
 ## Use
 
 ```bash
-# 1a. Annotate a single file
+# 1a. Annotate a single file (full schema embedded in the file header)
 cellsmith annotate path/to/file.py
 
 # 1b. Or annotate every .py in a project — respects .gitignore by default,
@@ -82,13 +82,23 @@ cellsmith annotate . --dry-run        # preview which files would be touched
 cellsmith annotate . --no-gitignore   # ignore .gitignore filtering
 cellsmith annotate . --include-hidden # include dotted dirs/files
 
+# 1c. Agentic mode — same cell markers, but each file gets only a short
+#     pointer header (~5 lines) instead of the ~30-line schema block. The
+#     full schema is dropped once at the project root as a markdown skill
+#     file (CELLSMITH_PATCH_SCHEMA.md) so agents seeing many files don't
+#     re-tokenize the schema in every one.
+cellsmith annotate-agent .
+
 # 2. Hand annotated file(s) to your LLM, get back a JSON patch, save as patch.json
 cellsmith patch patch.json .
 
 # 3. Roll back if the patch was bad
 cellsmith rollback patch.json .
 
-# 4. When you're done, strip cell markers + schema header to get plain code back
+# 4. Probe whether cellsmith is available (agents use this before patching)
+cellsmith status        # prints: available cellsmith 0.1.0
+
+# 5. When you're done, strip cell markers + schema header to get plain code back
 cellsmith strip path/to/file.py                # asks for confirmation
 cellsmith strip . -y                           # whole project, skip prompt
 cellsmith strip path/to/file.py --prompt-only  # keep markers, drop schema only
@@ -139,6 +149,28 @@ Accepted entries are appended one-per-line to `CHANGELOG.cellsmith.jsonl` at
 the patch target root — a structured, append-only project history you can
 read with `jq`, render to Markdown, or feed back to the model as context for
 later patches.
+
+## Agentic mode: `annotate-agent` + `status`
+
+In an agent workflow, the LLM often sees many annotated files in one
+session. Repeating the ~30-line schema header in every file is wasted
+tokens. `cellsmith annotate-agent` solves this:
+
+- Each annotated file gets a **5-line pointer header** instead of the full
+  schema, telling the agent to load `CELLSMITH_PATCH_SCHEMA.md` at the
+  project root.
+- That skill file is written once at the root, in plain markdown, so any
+  agent (Claude Code, Cursor, Continue, chat-UI paste, you name it) can
+  load it.
+- The skill file instructs the agent to run `cellsmith status` **first**:
+  - exit 0 (`available cellsmith <version>`) → generate a JSON patch per
+    the schema
+  - any error (command not found, non-zero exit) → **ignore the cell
+    markers and edit the file directly** per the user's original request
+
+That last point is the safety net: if `cellsmith` isn't installed on the
+machine where the agent runs, the markers are inert comments and the agent
+falls back to normal editing. No installation gymnastics required.
 
 ## For chat-agent integrators
 

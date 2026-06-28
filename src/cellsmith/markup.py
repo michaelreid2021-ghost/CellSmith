@@ -8,9 +8,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Tuple
 
+try:
+    from cellsmith import __version__
+except ImportError:
+    __version__ = "unknown"  # script-mode fallback
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 CHANGELOG_FILE = "CHANGELOG.cellsmith.jsonl"
+SKILL_DOC_FILENAME = "CELLSMITH_PATCH_SCHEMA.md"
 VALID_CHANGE_TYPES = frozenset({
     "new_feature",
     "correcting_implementation",
@@ -18,6 +24,175 @@ VALID_CHANGE_TYPES = frozenset({
     "refactor",
     "schema_migration",
 })
+
+# Full in-file schema header — embedded by `cellsmith annotate` so the file
+# self-documents the JSON patch contract. Used when the file may be pasted
+# into a chat UI without any agent tooling around it.
+FULL_SCHEMA_HEADER = (
+    "# %% [ai_schema:instructions]\n"
+    "# AI INSTRUCTIONS - PATCH SCHEMA:\n"
+    "#\n"
+    "# To modify this file, return a JSON response with the following structure.\n"
+    "# When using CELL_PATCH, `cell_id` MUST be an exact marker that exists in the file.\n"
+    "#\n"
+    "# {\n"
+    "#   \"revisions\": [\n"
+    "#     {\n"
+    "#       \"filename\": \"path/to/this/file.py\",\n"
+    "#       \"revision_type\": \"CELL_PATCH\",  # Or \"REPLACE\", \"CELL_CREATE\"\n"
+    "#       \"cell_id\": \"func:my_function\",  # Match an exact marker (e.g. 'imports', 'func:x', 'method:Cls.x', 'module:init', 'module:main_guard')\n"
+    "#       \"code_content\": \"# %% [func:my_function]\\ndef my_function():\\n    pass\\n\"\n"
+    "#     }\n"
+    "#   ],\n"
+    "#   \"changelog\": [\n"
+    "#     {\n"
+    "#       \"change_type\": \"bug_fix\",   # Required. One of: new_feature, correcting_implementation, bug_fix, refactor, schema_migration\n"
+    "#       \"summary\": \"Concise single-sentence description of the final state achieved.\",\n"
+    "#       \"details\": [\"Optional bullet of granular technical change.\"]\n"
+    "#     }\n"
+    "#   ]\n"
+    "# }\n"
+    "#\n"
+    "# BLOCKING GATE: every patch response MUST include at least one `changelog`\n"
+    "# entry. Classify your work strictly using the `change_type` enum. Write the\n"
+    "# `summary` as affirmative documentation of the final state — not a recount\n"
+    "# of past conversational errors.\n"
+    "#\n"
+    "# Choose the most efficient tool for the job (the user pays per token):\n"
+    "#   * REPLACE     : For new files, total rewrites, or files under 50 lines.\n"
+    "#   * CELL_PATCH  : For surgical updates to a specific function/class/method.\n"
+    "#                   `cell_id` MUST exist in the current SKELETON of the file.\n"
+    "#   * CELL_CREATE : To append new logic. Use `insert_after` to place it.\n"
+    "# %% [ai_schema:end]\n"
+    "\n"
+)
+
+# Laconic pointer header — embedded by `cellsmith annotate-agent` instead of
+# FULL_SCHEMA_HEADER, to avoid duplicating ~30 lines of schema instructions
+# across every annotated file in an agentic workflow. The skill doc at the
+# project root carries the full schema.
+POINTER_HEADER = (
+    "# %% [ai_schema:pointer]\n"
+    "# CellSmith-annotated file. Cells marked with `# %% [<cell_id>]`.\n"
+    "# To modify safely: load `" + SKILL_DOC_FILENAME + "` at the project root\n"
+    "# for the full JSON patch schema (incl. required `changelog` block).\n"
+    "# Run `cellsmith status` first — if it errors, ignore these markers and\n"
+    "# edit the file directly per the user's request.\n"
+    "# %% [ai_schema:end]\n"
+    "\n"
+)
+
+# Full schema doc dropped at project root by `cellsmith annotate-agent`.
+# Markdown so any agent (Claude Code, Cursor, Continue, chat-UI paste) can
+# load it; idempotent — overwritten on every run from this single constant.
+SKILL_DOC_MARKDOWN = """# CellSmith patch schema
+
+This project's `.py` files have been annotated by **CellSmith** with cell
+markers (`# %% [func:name]`, `# %% [class:Foo]`, `# %% [method:Cls.x]`,
+`# %% [imports]`, etc.). Each annotated file opens with a short pointer to
+this document.
+
+## Step 1 — probe before patching
+
+Before generating any patch payload, run:
+
+```bash
+cellsmith status
+```
+
+- **If it prints `available`** (exit 0): generate a JSON patch per the schema
+  below and save it as `patch.json`. The user (or your tooling) applies it
+  with `cellsmith patch patch.json .`.
+- **If it errors** (command not found, or exit non-zero): **ignore the cell
+  markers entirely.** Edit the target file(s) directly using your normal
+  tools per the user's original request. The markers are inert comments — no
+  harm in leaving them in place.
+
+## Step 2 — JSON patch shape
+
+```json
+{
+  "revisions": [
+    {
+      "filename": "path/to/file.py",
+      "revision_type": "CELL_PATCH",
+      "cell_id": "method:UserService.validate",
+      "code_content": "# %% [method:UserService.validate]\\n    def validate(self, ...):\\n        ..."
+    }
+  ],
+  "artifacts": [
+    {
+      "filename": "new_helper.py",
+      "code_content": "# full source of the new file"
+    }
+  ],
+  "changelog": [
+    {
+      "change_type": "bug_fix",
+      "summary": "validate() now rejects empty bearer tokens before hitting the DB.",
+      "details": [
+        "Replaced is None check with not token.strip()",
+        "Added regression test for empty-string token"
+      ]
+    }
+  ]
+}
+```
+
+### `revisions[]` — surgical edits to existing files
+
+| Field | Required | Notes |
+|---|---|---|
+| `filename` | yes | Path relative to the patch target dir |
+| `revision_type` | yes | `REPLACE` \\| `CELL_PATCH` \\| `CELL_CREATE` |
+| `cell_id` | for CELL_PATCH | Must match an existing `# %% [<cell_id>]` marker in the file |
+| `code_content` | yes | First line of CELL_PATCH/CREATE must be the marker. Provide full logic — never redact for brevity. |
+
+Tool selection (the user pays per token — pick the laconic one):
+- `REPLACE` — new files, total rewrites, or files under ~50 lines
+- `CELL_PATCH` — surgical updates to a specific function/class/method (`cell_id` must already exist)
+- `CELL_CREATE` — append new logic to an annotated file
+
+### `artifacts[]` — brand-new files
+
+Use for files that don't exist yet. Provide `filename` and the full
+`code_content`.
+
+### `changelog[]` — **BLOCKING GATE**
+
+Every patch payload **must** include at least one changelog entry. Payloads
+without a valid `changelog` are rejected by `cellsmith patch` (exit code 2)
+before any disk writes happen. Accepted entries are appended to
+`CHANGELOG.cellsmith.jsonl` at the patch target root.
+
+| Field | Required | Notes |
+|---|---|---|
+| `change_type` | yes | One of: `new_feature`, `correcting_implementation`, `bug_fix`, `refactor`, `schema_migration` |
+| `summary` | yes | One concise affirmative sentence describing the **final state achieved** — not a recount of past mistakes |
+| `details` | no | Array of strings, granular technical bullets |
+| `timestamp` | no | ISO-8601 UTC; `cellsmith patch` fills it in at apply time if omitted |
+| `author` | no | Free-form model/agent identifier |
+
+## Step 3 — hand off the JSON
+
+Save the JSON as `patch.json` (or any name) and let the user (or your shell
+tool) run:
+
+```bash
+cellsmith patch patch.json .
+```
+
+If the file changed and the diff isn't what you wanted, roll back:
+
+```bash
+cellsmith rollback patch.json .
+```
+
+---
+
+*This file is auto-generated by `cellsmith annotate-agent` and regenerated
+on every run. Don't edit by hand.*
+"""
 
 class CellAnnotator(ast.NodeVisitor):
     def __init__(self):
@@ -104,7 +279,7 @@ class CellAnnotator(ast.NodeVisitor):
                 suffix = f":{init_count}" if init_count > 1 else ""
                 self.insertions.append((stmt.lineno, f"# %% [module:init{suffix}]\n"))
 
-def annotate_file(filepath: Path) -> None:
+def annotate_file(filepath: Path, header: str = FULL_SCHEMA_HEADER) -> None:
     if not filepath.exists():
         logging.error(f"File not found: {filepath}")
         return
@@ -167,48 +342,13 @@ def annotate_file(filepath: Path) -> None:
             lines.insert(idx, marker)
             insert_count += 1
 
-    # 3. Prepend AI instructions block if it doesn't already exist
-    schema_header = (
-        "# %% [ai_schema:instructions]\n"
-        "# AI INSTRUCTIONS - PATCH SCHEMA:\n"
-        "#\n"
-        "# To modify this file, return a JSON response with the following structure.\n"
-        "# When using CELL_PATCH, `cell_id` MUST be an exact marker that exists in the file.\n"
-        "#\n"
-        "# {\n"
-        "#   \"revisions\": [\n"
-        "#     {\n"
-        "#       \"filename\": \"path/to/this/file.py\",\n"
-        "#       \"revision_type\": \"CELL_PATCH\",  # Or \"REPLACE\", \"CELL_CREATE\"\n"
-        "#       \"cell_id\": \"func:my_function\",  # Match an exact marker (e.g. 'imports', 'func:x', 'method:Cls.x', 'module:init', 'module:main_guard')\n"
-        "#       \"code_content\": \"# %% [func:my_function]\\ndef my_function():\\n    pass\\n\"\n"
-        "#     }\n"
-        "#   ],\n"
-        "#   \"changelog\": [\n"
-        "#     {\n"
-        "#       \"change_type\": \"bug_fix\",   # Required. One of: new_feature, correcting_implementation, bug_fix, refactor, schema_migration\n"
-        "#       \"summary\": \"Concise single-sentence description of the final state achieved.\",\n"
-        "#       \"details\": [\"Optional bullet of granular technical change.\"]\n"
-        "#     }\n"
-        "#   ]\n"
-        "# }\n"
-        "#\n"
-        "# BLOCKING GATE: every patch response MUST include at least one `changelog`\n"
-        "# entry. Classify your work strictly using the `change_type` enum. Write the\n"
-        "# `summary` as affirmative documentation of the final state — not a recount\n"
-        "# of past conversational errors.\n"
-        "#\n"
-        "# Choose the most efficient tool for the job (the user pays per token):\n"
-        "#   * REPLACE     : For new files, total rewrites, or files under 50 lines.\n"
-        "#   * CELL_PATCH  : For surgical updates to a specific function/class/method.\n"
-        "#                   `cell_id` MUST exist in the current SKELETON of the file.\n"
-        "#   * CELL_CREATE : To append new logic. Use `insert_after` to place it.\n"
-        "# %% [ai_schema:end]\n"
-        "\n"
+    # 3. Prepend AI instructions block if neither schema variant exists yet
+    already_has_header = any(
+        "[ai_schema:instructions]" in line or "[ai_schema:pointer]" in line
+        for line in lines[:20]
     )
-    
-    if not any("AI INSTRUCTIONS - PATCH SCHEMA" in line for line in lines[:20]):
-        lines.insert(0, schema_header)
+    if not already_has_header:
+        lines.insert(0, header)
         insert_count += 1
 
     if insert_count == 0:
@@ -259,6 +399,15 @@ def _validate_changelog(entries: list) -> list:
             "details": entry.get("details") or [],
         })
     return normalized
+
+
+def write_skill_doc(project_root: Path) -> Path:
+    """Write the markdown skill doc at the project root. Always overwrites
+    (single source-of-truth: SKILL_DOC_MARKDOWN). Returns the path written."""
+    project_root.mkdir(parents=True, exist_ok=True)
+    path = project_root / SKILL_DOC_FILENAME
+    path.write_text(SKILL_DOC_MARKDOWN, encoding="utf-8")
+    return path
 
 
 def _write_changelog(entries: list, target_dir: Path) -> None:
@@ -375,7 +524,7 @@ def strip_file(
         stripped = line.strip()
 
         if strip_prompt:
-            if stripped == "# %% [ai_schema:instructions]":
+            if stripped in ("# %% [ai_schema:instructions]", "# %% [ai_schema:pointer]"):
                 skipping_schema = True
                 continue
             if skipping_schema:
@@ -479,11 +628,26 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="AST-based Code Annotator and JSON Patcher")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    annotate_parser = subparsers.add_parser("annotate", help="Annotate Python file(s) with cell markers")
+    annotate_parser = subparsers.add_parser("annotate", help="Annotate Python file(s) with cell markers + full schema header")
     annotate_parser.add_argument("target", type=Path, help="Target Python file or directory")
     annotate_parser.add_argument("--no-gitignore", action="store_true", help="Don't filter via .gitignore")
     annotate_parser.add_argument("--include-hidden", action="store_true", help="Include dotted (hidden) dirs/files")
     annotate_parser.add_argument("--dry-run", action="store_true", help="List files that would be annotated, don't write")
+
+    agent_parser = subparsers.add_parser(
+        "annotate-agent",
+        help=f"Like annotate, but uses a laconic pointer header and writes {SKILL_DOC_FILENAME} at the project root",
+    )
+    agent_parser.add_argument("target", type=Path, help="Target Python file or directory")
+    agent_parser.add_argument("--no-gitignore", action="store_true", help="Don't filter via .gitignore")
+    agent_parser.add_argument("--include-hidden", action="store_true", help="Include dotted (hidden) dirs/files")
+    agent_parser.add_argument("--dry-run", action="store_true", help="List files that would be annotated, don't write")
+    agent_parser.add_argument(
+        "--skill-root", type=Path, default=None,
+        help=f"Where to write {SKILL_DOC_FILENAME} (default: target if dir, else target's parent)",
+    )
+
+    subparsers.add_parser("status", help="Report whether cellsmith is installed and runnable (for agent probes)")
 
     patch_parser = subparsers.add_parser("patch", help="Apply JSON response patch to target directory")
     patch_parser.add_argument("json_file", type=Path, help="JSON response file")
@@ -504,7 +668,11 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    if args.command == "annotate":
+    if args.command == "status":
+        # Stable, parseable single-line output for agent probes.
+        print(f"available cellsmith {__version__}")
+        return
+    if args.command in ("annotate", "annotate-agent"):
         if not args.target.exists():
             logging.error(f"Target does not exist: {args.target}")
             sys.exit(1)
@@ -521,8 +689,15 @@ def main() -> None:
                 print(f)
             logging.info(f"[dry-run] {len(files)} file(s) would be annotated")
             return
+        header = POINTER_HEADER if args.command == "annotate-agent" else FULL_SCHEMA_HEADER
         for f in files:
-            annotate_file(f)
+            annotate_file(f, header=header)
+        if args.command == "annotate-agent":
+            skill_root = args.skill_root
+            if skill_root is None:
+                skill_root = args.target if args.target.is_dir() else args.target.parent
+            written = write_skill_doc(skill_root)
+            logging.info(f"Wrote skill doc to {written}")
         logging.info(f"Processed {len(files)} file(s)")
     elif args.command == "strip":
         if not args.target.exists():
