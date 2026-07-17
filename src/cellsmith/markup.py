@@ -37,14 +37,18 @@ FULL_SCHEMA_HEADER = (
     "#\n"
     "# To modify this file, return a JSON response with the following structure.\n"
     "# When using CELL_PATCH, `cell_id` MUST be an exact marker that exists in the file.\n"
+    "# Functions/classes/methods use paired markers: `func:name:start` / `func:name:end`\n"
+    "# (likewise `class:X:start` and `method:Cls.x:start`). Patch the `:start` cell;\n"
+    "# everything through the matching `:end` marker is replaced. Simple cells like\n"
+    "# `imports` and `module:init` have a single marker with no suffix.\n"
     "#\n"
     "# {\n"
     "#   \"revisions\": [\n"
     "#     {\n"
     "#       \"filename\": \"path/to/this/file.py\",\n"
     "#       \"revision_type\": \"CELL_PATCH\",  # Or \"REPLACE\", \"CELL_CREATE\", \"FILE_CREATE\", \"FILE_MOVE\"\n"
-    "#       \"cell_id\": \"func:my_function\",  # Match an exact marker (e.g. 'imports', 'func:x', 'method:Cls.x')\n"
-    "#       \"code_content\": \"# %% [func:my_function]\\ndef my_function():\\n    pass\\n\"\n"
+    "#       \"cell_id\": \"func:my_function:start\",  # Match an exact marker (e.g. 'imports', 'func:x:start', 'method:Cls.x:start')\n"
+    "#       \"code_content\": \"# %% [func:my_function:start]\\ndef my_function():\\n    pass\\n# %% [func:my_function:end]\\n\"\n"
     "#     }\n"
     "#   ],\n"
     "#   \"changelog\": [\n"
@@ -62,12 +66,22 @@ FULL_SCHEMA_HEADER = (
     "# of past conversational errors.\n"
     "#\n"
     "# Choose the most efficient tool for the job (the user pays per token):\n"
-    "#   * REPLACE     : For total rewrites or files under 50 lines.\n"
+    "#   * REPLACE     : For total rewrites or files under 50 lines. Emit PLAIN\n"
+    "#                   code only — no cell markers, no schema header. The tool\n"
+    "#                   re-annotates the file automatically after a successful patch.\n"
     "#   * CELL_PATCH  : For surgical updates to a specific function/class/method.\n"
     "#                   `cell_id` MUST exist in the current SKELETON of the file.\n"
+    "#                   `code_content` MUST be the COMPLETE cell — beginning with\n"
+    "#                   its `:start` marker line and including the matching `:end`\n"
+    "#                   marker — never a partial diff.\n"
     "#   * CELL_CREATE : To append new logic to an existing file.\n"
-    "#   * FILE_CREATE : To create a brand new file (provide full code_content).\n"
+    "#   * FILE_CREATE : To create a brand new file. Plain code only — annotation\n"
+    "#                   is handled by the tool, same as REPLACE.\n"
     "#   * FILE_MOVE   : To move/rename a file (requires 'new_filename' field).\n"
+    "#\n"
+    "# `cellsmith patch` prints a numbered per-revision report (OK / FAILED).\n"
+    "# If some revisions fail, re-emit ONLY the FAILED ones — the OK ones are\n"
+    "# already applied and must not be re-sent.\n"
     "# %% [ai_schema:end]\n"
     "\n"
 )
@@ -90,10 +104,13 @@ POINTER_HEADER = (
 # Full schema doc dropped at project root by `cellsmith annotate-agent`.
 # Markdown so any agent (Claude Code, Cursor, Continue, chat-UI paste) can
 # load it; idempotent — overwritten on every run from this single constant.
-SKILL_DOC_MARKDOWN = """# CellSmith patch schema
+SKILL_DOC_MARKDOWN = r"""# CellSmith patch schema
 
 This project's `.py` files have been annotated by **CellSmith** with cell
-markers (`# %% [func:name]`, `# %% [class:Foo]`, `# %% [method:Cls.x]`, `# %% [imports]`, etc.).
+markers. Functions, classes, and methods use *paired* markers —
+`# %% [func:name:start]` / `# %% [func:name:end]`, `# %% [class:Foo:start]`,
+`# %% [method:Cls.x:start]`, etc. Simple cells (`# %% [imports]`,
+`# %% [module:init]`, `# %% [module:main_guard]`) have a single marker.
 Each annotated file opens with a short pointer to this document.
 
 ## Step 1 — probe before patching
@@ -120,8 +137,8 @@ cellsmith status
     {
       "filename": "path/to/file.py",
       "revision_type": "CELL_PATCH",
-      "cell_id": "method:UserService.validate",
-      "code_content": "# %% [method:UserService.validate]\n    def validate(self, ...):\n        ..."
+      "cell_id": "method:UserService.validate:start",
+      "code_content": "# %% [method:UserService.validate:start]\n    def validate(self, ...):\n        ...\n# %% [method:UserService.validate:end]\n"
     }
   ],
   "changelog": [
@@ -142,17 +159,30 @@ cellsmith status
 | Field | Required | Notes |
 |---|---|---|
 | `filename` | yes | Path relative to the patch target dir |
-| `revision_type` | yes | `REPLACE` \\| `CELL_PATCH` \\| `CELL_CREATE` \\| `FILE_CREATE` \\| `FILE_MOVE` |
-| `cell_id` | for CELL_PATCH | Must match an existing `# %% [<cell_id>]` marker |
-| `code_content` | for patching | The payload. For CELL_PATCH/CREATE, first line must be the marker |
+| `revision_type` | yes | `REPLACE` \| `CELL_PATCH` \| `CELL_CREATE` \| `FILE_CREATE` \| `FILE_MOVE` |
+| `cell_id` | for CELL_PATCH | Must match an existing `# %% [<cell_id>]` marker. For paired cells, target the `:start` marker |
+| `code_content` | for patching | For CELL_PATCH: the **complete cell**, beginning with its `:start` marker and including the matching `:end` marker — never a partial diff. For REPLACE / FILE_CREATE: **plain code only** — no markers, no schema header (annotation is applied automatically after a successful patch) |
 | `new_filename` | for FILE_MOVE | The destination path |
 
 Tool selection (the user pays per token — pick the laconic one):
-- `REPLACE` — total rewrites or files under ~50 lines
+- `REPLACE` — total rewrites or files under ~50 lines (plain code, no markers)
 - `CELL_PATCH` — surgical updates to a specific function/class/method
 - `CELL_CREATE` — append new logic to an annotated file
-- `FILE_CREATE` — brand new file from scratch
+- `FILE_CREATE` — brand new file from scratch (plain code, no markers)
 - `FILE_MOVE` — rename or move a file
+
+### The patch report
+
+`cellsmith patch` prints a numbered, ordered report — one line per artifact /
+revision, `OK` or `FAILED`, plus a corrective instruction for each failure.
+Exit codes: `0` all applied, `2` changelog gate rejected (nothing written),
+`3` partial — some operations failed.
+
+**If some revisions fail, re-emit ONLY the FAILED ones.** The OK ones are
+already applied; re-sending them wastes tokens and can double-apply appends.
+After a successful patch the tool automatically strips and re-annotates every
+touched `.py` file, so markers are always in perfect alignment — you never
+need to maintain them by hand.
 
 ### `changelog[]` — **BLOCKING GATE**
 
@@ -189,6 +219,8 @@ cellsmith rollback patch.json .
 *This file is auto-generated by `cellsmith annotate-agent` and regenerated
 on every run. Don't edit by hand.*
 """
+
+
 # %% [class:CellAnnotator:start]
 class CellAnnotator(ast.NodeVisitor):
 # %% [method:CellAnnotator.__init__:start]
@@ -196,6 +228,7 @@ class CellAnnotator(ast.NodeVisitor):
         self.insertions: List[Tuple[int, str]] = []
         self.current_class: str = ""
         self.imports_marked: bool = False
+        self.function_depth: int = 0
 # %% [method:CellAnnotator.__init__:end]
 
 # %% [method:CellAnnotator._handle_import:start]
@@ -226,19 +259,26 @@ class CellAnnotator(ast.NodeVisitor):
         self.current_class = node.name
         self.generic_visit(node)
         self.current_class = previous_class
-# %% [method:CellAnnotator.visit_FunctionDef:start]
 # %% [method:CellAnnotator.visit_ClassDef:end]
+
+# %% [method:CellAnnotator.visit_FunctionDef:start]
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        if self.current_class:
-            base_id = f"method:{self.current_class}.{node.name}"
-        else:
-            base_id = f"func:{node.name}"
-        self.insertions.append((node.lineno, f"# %% [{base_id}:start]\n"))
-        if hasattr(node, "end_lineno") and node.end_lineno:
-            self.insertions.append((node.end_lineno + 1, f"# %% [{base_id}:end]\n"))
+        # Only annotate module-level functions and class-direct methods.
+        # Nested (closure) functions live inside their parent's cell.
+        if self.function_depth == 0:
+            if self.current_class:
+                base_id = f"method:{self.current_class}.{node.name}"
+            else:
+                base_id = f"func:{node.name}"
+            self.insertions.append((node.lineno, f"# %% [{base_id}:start]\n"))
+            if hasattr(node, "end_lineno") and node.end_lineno:
+                self.insertions.append((node.end_lineno + 1, f"# %% [{base_id}:end]\n"))
+        self.function_depth += 1
         self.generic_visit(node)
-# %% [method:CellAnnotator.visit_AsyncFunctionDef:start]
+        self.function_depth -= 1
 # %% [method:CellAnnotator.visit_FunctionDef:end]
+
+# %% [method:CellAnnotator.visit_AsyncFunctionDef:start]
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         self.visit_FunctionDef(node)
 # %% [method:CellAnnotator.visit_AsyncFunctionDef:end]
@@ -302,7 +342,7 @@ def annotate_file(filepath: Path, header: str = FULL_SCHEMA_HEADER) -> None:
 
     with open(filepath, "r", encoding="utf-8") as f:
         lines = f.readlines()
-        
+
     source = "".join(lines)
 
     # 1. Identify custom 'knobs' ranges to protect them from inner annotation
@@ -313,7 +353,7 @@ def annotate_file(filepath: Path, header: str = FULL_SCHEMA_HEADER) -> None:
         stripped = line.strip()
         if stripped.startswith("# %% [knobs:") and stripped.endswith(":start]"):
             in_knob = True
-            start_line = i + 1  
+            start_line = i + 1
         elif in_knob and stripped.startswith("# %% [knobs:") and stripped.endswith(":end]"):
             knob_ranges.append((start_line, i + 1))
             in_knob = False
@@ -334,26 +374,51 @@ def annotate_file(filepath: Path, header: str = FULL_SCHEMA_HEADER) -> None:
         if not inside_knob:
             valid_insertions.append((lineno, marker))
 
-    # Process bottom-to-top to prevent line shifting issues
-    valid_insertions.sort(key=lambda x: x[0], reverse=True)
+    # Process bottom-to-top to prevent line shifting issues.
+    # Secondary key: at the same line number, `:end` markers must land ABOVE
+    # `:start` markers in the final file (a block's end precedes the next
+    # block's start). With reverse sort + insert-at-same-index semantics, the
+    # item processed LAST ends up on top — so `:start` (key 1) must sort
+    # before `:end` (key 0) in the reversed order.
+    valid_insertions.sort(
+        key=lambda x: (x[0], 0 if ":end]" in x[1] else 1),
+        reverse=True,
+    )
 
     # Insert valid markers strictly if they don't already exist
     insert_count = 0
     for lineno, marker in valid_insertions:
         idx = lineno - 1
         already_annotated = False
-        
-        # Look strictly upward from the target index
+
+        # Look upward from the target index (`:start` and simple markers
+        # precede their code), skipping blanks and OTHER markers (adjacent
+        # blocks stack end/start markers on consecutive lines) ...
         check_idx = idx - 1
         while check_idx >= 0:
             stripped = lines[check_idx].strip()
-            if not stripped:  # Skip empty lines to find the true preceding line
-                check_idx -= 1
-                continue
             if stripped == marker.strip():
                 already_annotated = True
-            break  # Stop checking at the first non-empty line
-            
+                break
+            if not stripped or stripped.startswith("# %% ["):
+                check_idx -= 1
+                continue
+            break  # Stop at the first non-blank, non-marker line
+
+        # ... and downward from the target index (`:end` markers sit at the
+        # line right after the block, i.e. exactly where we'd re-insert).
+        if not already_annotated:
+            check_idx = idx
+            while check_idx < len(lines):
+                stripped = lines[check_idx].strip()
+                if stripped == marker.strip():
+                    already_annotated = True
+                    break
+                if not stripped or stripped.startswith("# %% ["):
+                    check_idx += 1
+                    continue
+                break
+
         if not already_annotated:
             lines.insert(idx, marker)
             insert_count += 1
@@ -374,16 +439,17 @@ def annotate_file(filepath: Path, header: str = FULL_SCHEMA_HEADER) -> None:
 
     with open(filepath, "w", encoding="utf-8") as f:
         f.writelines(lines)
-    
+
     logging.info(f"Annotated {filepath} with {insert_count} new elements.")
-# %% [func:create_backup:start]
 # %% [func:annotate_file:end]
+
+# %% [func:create_backup:start]
 def create_backup(filepath: Path) -> None:
     if filepath.exists():
         backup_idx = 1
         while filepath.with_suffix(f"{filepath.suffix}.bak.{backup_idx}").exists():
             backup_idx += 1
-            
+
         for i in range(backup_idx - 1, 0, -1):
             old_bak = filepath.with_suffix(f"{filepath.suffix}.bak.{i}")
             new_bak = filepath.with_suffix(f"{filepath.suffix}.bak.{i+1}")
@@ -395,8 +461,9 @@ def create_backup(filepath: Path) -> None:
 
         shutil.copy2(filepath, backup_path)
         logging.info(f"Created versioned backup: {backup_path}")
-# %% [func:_validate_changelog:start]
 # %% [func:create_backup:end]
+
+# %% [func:_validate_changelog:start]
 def _validate_changelog(entries: list) -> list:
     """Validate changelog entries from a patch payload. Raise ValueError on any issue.
 
@@ -456,93 +523,171 @@ def _write_changelog(entries: list, target_dir: Path) -> None:
 # %% [func:_write_changelog:end]
 
 
+# %% [func:_detect_header:start]
+def _detect_header(filepath: Path, target_dir: Path) -> str:
+    """Pick the schema header to use when re-annotating `filepath`.
+
+    Prefer whatever variant the file already carries; for files with no
+    header (fresh REPLACE / FILE_CREATE payloads), use the pointer header
+    if the project has a skill doc at the target root, else the full header.
+    """
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            for _ in range(20):
+                line = f.readline()
+                if not line:
+                    break
+                if "[ai_schema:pointer]" in line:
+                    return POINTER_HEADER
+                if "[ai_schema:instructions]" in line:
+                    return FULL_SCHEMA_HEADER
+    except OSError:
+        pass
+    if (target_dir / SKILL_DOC_FILENAME).exists():
+        return POINTER_HEADER
+    return FULL_SCHEMA_HEADER
+# %% [func:_detect_header:end]
+
+
 # %% [func:apply_revisions:start]
-def apply_revisions(data: dict, target_dir: Path) -> None:
+def apply_revisions(data: dict, target_dir: Path) -> bool:
+    """Apply a patch payload.
+
+    Prints an ordered, numbered per-operation report (OK / FAILED with a
+    corrective instruction) so an agent can re-emit only what failed.
+    After applying, every touched .py file is stripped and re-annotated so
+    markers stay in perfect alignment regardless of what the payload
+    contained. Returns True only if every operation succeeded.
+    """
     changelog_entries = _validate_changelog(data.get("changelog"))
     backed_up_files = set()
+    results: List[Tuple[bool, str]] = []
+    touched_py: dict = {}  # Path -> header to re-apply
 
-# %% [func:_ensure_backup:start]
     def _ensure_backup(filepath: Path):
         if filepath not in backed_up_files:
             create_backup(filepath)
             backed_up_files.add(filepath)
-# %% [func:_ensure_backup:end]
+
+    def _ok(label: str, message: str) -> None:
+        results.append((True, f"{label} OK - {message}"))
+
+    def _fail(label: str, message: str) -> None:
+        results.append((False, f"{label} FAILED - {message}"))
+
+    def _touch(filepath: Path) -> None:
+        # Must run BEFORE the write so header detection sees the old file.
+        if filepath.suffix == ".py" and filepath not in touched_py:
+            touched_py[filepath] = _detect_header(filepath, target_dir)
 
     artifacts = data.get("artifacts", [])
-    for artifact in artifacts:
-        target_file = target_dir / artifact["filename"]
+    for n, artifact in enumerate(artifacts, 1):
+        label = f"Artifact [{n}]"
+        filename = artifact.get("filename")
+        code = artifact.get("code_content")
+        if not filename or code is None:
+            _fail(label, "artifact entries require `filename` and `code_content`.")
+            continue
+        target_file = target_dir / filename
         target_file.parent.mkdir(parents=True, exist_ok=True)
-        
-        code = artifact["code_content"]
-        if not code.startswith("# %% [ai_schema"):
-            code = POINTER_HEADER + code
-            
+        if target_file.exists():
+            # Back up so rollback restores rather than destroys.
+            _ensure_backup(target_file)
+        _touch(target_file)
         with open(target_file, "w", encoding="utf-8") as f:
             f.write(code)
-        logging.info(f"Created artifact: {target_file}")
+        _ok(label, f"created {filename}")
+
+    LABELS = {
+        "CELL_PATCH": "Cell Patch",
+        "REPLACE": "Replace",
+        "FILE_CREATE": "File Create",
+        "CELL_CREATE": "Cell Create",
+        "FILE_MOVE": "File Move",
+    }
 
     revisions = data.get("revisions", [])
-    for rev in revisions:
-        target_file = target_dir / rev["filename"]
+    for n, rev in enumerate(revisions, 1):
         rev_type = rev.get("revision_type")
+        label = f"{LABELS.get(rev_type, 'Revision')} [{n}]"
+        filename = rev.get("filename")
         code = rev.get("code_content", "")
+
+        if rev_type not in LABELS:
+            _fail(label, f"unknown revision_type {rev_type!r}; use one of {sorted(LABELS)}.")
+            continue
+        if not filename:
+            _fail(label, "missing `filename`.")
+            continue
+        target_file = target_dir / filename
 
         if rev_type == "FILE_MOVE":
             new_filename = rev.get("new_filename")
             if not new_filename:
-                logging.error(f"FILE_MOVE missing 'new_filename' for {target_file}")
+                _fail(label, "FILE_MOVE requires a `new_filename` field with the destination path.")
+                continue
+            if not target_file.exists():
+                _fail(label, f"cannot move {filename}: file does not exist. Check the path against the project tree.")
                 continue
             new_target = target_dir / new_filename
-            if not target_file.exists():
-                logging.warning(f"Target missing for FILE_MOVE: {target_file}")
-                continue
             _ensure_backup(target_file)
             new_target.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(target_file, new_target)
-            logging.info(f"Moved {target_file} to {new_target}")
+            _ok(label, f"moved {filename} to {new_filename}")
             continue
 
         is_new_file = not target_file.exists()
         if is_new_file and rev_type not in ("REPLACE", "FILE_CREATE"):
-            logging.warning(f"Target file missing for revision, skipping: {target_file}")
+            _fail(label, f"target file {filename} does not exist. Use FILE_CREATE to create new files.")
             continue
-
-        if not is_new_file:
-            _ensure_backup(target_file)
 
         if rev_type in ("REPLACE", "FILE_CREATE"):
-            if is_new_file and not code.startswith("# %% [ai_schema"):
-                code = POINTER_HEADER + code
+            if not is_new_file:
+                _ensure_backup(target_file)
+            _touch(target_file)
             target_file.parent.mkdir(parents=True, exist_ok=True)
             with open(target_file, "w", encoding="utf-8") as f:
                 f.write(code)
-            action = "Created" if is_new_file else "Replaced"
-            logging.info(f"{action} file via {rev_type}: {target_file}")
+            _ok(label, f"{'created' if is_new_file else 'replaced'} {filename}")
 
         elif rev_type == "CELL_PATCH":
             cell_id = rev.get("cell_id")
             if not cell_id:
-                logging.error(f"CELL_PATCH missing cell_id for {target_file}")
+                _fail(label, "CELL_PATCH requires `cell_id` matching an existing marker (e.g. `func:name:start`).")
                 continue
 
             marker = f"# %% [{cell_id}]"
+            is_start_block = ":start]" in marker
+            expected_end_marker = marker.replace(":start]", ":end]") if is_start_block else None
+
+            # Payload validation: the complete cell must be emitted —
+            # start marker first, matching end marker present.
+            content_lines = [l.strip() for l in code.splitlines() if l.strip()]
+            has_start = bool(content_lines) and content_lines[0] == marker
+            has_end = (not is_start_block) or (expected_end_marker in content_lines)
+            if not (has_start and has_end):
+                _fail(label, (
+                    "Ensure you are emitting the complete cell, not just changes or a "
+                    "partial update — `code_content` must begin with the `:start` marker "
+                    "line and include the matching `:end` marker."
+                ))
+                continue
+
             with open(target_file, "r", encoding="utf-8") as f:
                 lines = f.readlines()
 
             start_idx = -1
-            end_idx = len(lines)
-
+            end_idx = -1
             for i, line in enumerate(lines):
                 if line.strip() == marker:
                     start_idx = i
                     break
-
             if start_idx == -1:
-                logging.error(f"Marker {marker} not found in {target_file}")
+                _fail(label, (
+                    f"marker `{marker}` not found in {filename}. `cell_id` must exactly "
+                    "match a marker in the CURRENT file — re-read the file skeleton if unsure."
+                ))
                 continue
-
-            is_start_block = ":start]" in marker
-            expected_end_marker = marker.replace(":start]", ":end]") if is_start_block else None
 
             for i in range(start_idx + 1, len(lines)):
                 stripped = lines[i].strip()
@@ -554,134 +699,64 @@ def apply_revisions(data: dict, target_dir: Path) -> None:
                     if stripped.startswith("# %% ["):
                         end_idx = i
                         break
-
-            if not code.endswith("\n"):
-                code += "\n"
-
-            new_lines = lines[:start_idx] + [code] + lines[end_idx:]
-
-            with open(target_file, "w", encoding="utf-8") as f:
-                f.writelines(new_lines)
-
-            logging.info(f"Patched cell {cell_id} in {target_file}")
-
-        elif rev_type == "CELL_CREATE":
-            with open(target_file, "a", encoding="utf-8") as f:
-                f.write("\n" + code + "\n")
-            logging.info(f"Appended new cell to {target_file}")
-
-    _write_changelog(changelog_entries, target_dir)
-# %% [func:_ensure_backup:start]
-    def _ensure_backup(filepath: Path):
-        if filepath not in backed_up_files:
-            create_backup(filepath)
-            backed_up_files.add(filepath)
-# %% [func:_ensure_backup:end]
-
-    artifacts = data.get("artifacts", [])
-    for artifact in artifacts:
-        target_file = target_dir / artifact["filename"]
-        target_file.parent.mkdir(parents=True, exist_ok=True)
-        
-        code = artifact["code_content"]
-        if not code.startswith("# %% [ai_schema"):
-            code = POINTER_HEADER + code
-            
-        with open(target_file, "w", encoding="utf-8") as f:
-            f.write(code)
-        logging.info(f"Created artifact: {target_file}")
-
-    revisions = data.get("revisions", [])
-    for rev in revisions:
-        target_file = target_dir / rev["filename"]
-        rev_type = rev.get("revision_type")
-        code = rev.get("code_content", "")
-
-        if rev_type == "FILE_MOVE":
-            new_filename = rev.get("new_filename")
-            if not new_filename:
-                logging.error(f"FILE_MOVE missing 'new_filename' for {target_file}")
-                continue
-            new_target = target_dir / new_filename
-            if not target_file.exists():
-                logging.warning(f"Target missing for FILE_MOVE: {target_file}")
-                continue
-            _ensure_backup(target_file)
-            new_target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(target_file, new_target)
-            logging.info(f"Moved {target_file} to {new_target}")
-            continue
-
-        is_new_file = not target_file.exists()
-        if is_new_file and rev_type != "REPLACE":
-            logging.warning(f"Target file missing for revision, skipping: {target_file}")
-            continue
-
-        if not is_new_file:
-            _ensure_backup(target_file)
-
-        if rev_type == "REPLACE":
-            if is_new_file and not code.startswith("# %% [ai_schema"):
-                code = POINTER_HEADER + code
-            target_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(target_file, "w", encoding="utf-8") as f:
-                f.write(code)
-            logging.info(f"Replaced entire file: {target_file}")
-
-        elif rev_type == "CELL_PATCH":
-            cell_id = rev.get("cell_id")
-            if not cell_id:
-                logging.error(f"CELL_PATCH missing cell_id for {target_file}")
-                continue
-
-            marker = f"# %% [{cell_id}]"
-            with open(target_file, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-
-            start_idx = -1
-            end_idx = len(lines)
-
-            for i, line in enumerate(lines):
-                if line.strip() == marker:
-                    start_idx = i
-                    break
-
-            if start_idx == -1:
-                logging.error(f"Marker {marker} not found in {target_file}")
-                continue
-
-            is_start_block = ":start]" in marker
-            expected_end_marker = marker.replace(":start]", ":end]") if is_start_block else None
-
-            for i in range(start_idx + 1, len(lines)):
-                stripped = lines[i].strip()
+            if end_idx == -1:
                 if is_start_block:
-                    if stripped == expected_end_marker:
-                        end_idx = i + 1
-                        break
-                else:
-                    if stripped.startswith("# %% ["):
-                        end_idx = i
-                        break
+                    _fail(label, (
+                        f"`{expected_end_marker}` is missing in {filename}, so the cell "
+                        "boundary is broken. Re-emit the whole file via REPLACE to restore structure."
+                    ))
+                    continue
+                end_idx = len(lines)  # simple (unpaired) cell at EOF
 
             if not code.endswith("\n"):
                 code += "\n"
-
             new_lines = lines[:start_idx] + [code] + lines[end_idx:]
-
+            _ensure_backup(target_file)
+            _touch(target_file)
             with open(target_file, "w", encoding="utf-8") as f:
                 f.writelines(new_lines)
-
-            logging.info(f"Patched cell {cell_id} in {target_file}")
+            _ok(label, f"patched {cell_id} in {filename}")
 
         elif rev_type == "CELL_CREATE":
+            _ensure_backup(target_file)
+            _touch(target_file)
             with open(target_file, "a", encoding="utf-8") as f:
                 f.write("\n" + code + "\n")
-            logging.info(f"Appended new cell to {target_file}")
+            _ok(label, f"appended new cell to {filename}")
 
-    _write_changelog(changelog_entries, target_dir)
-# %% [func:strip_file:start]
+    # Post-pass: normalize every touched .py file. Strip whatever markers /
+    # headers the payload did or didn't include, then re-annotate from the
+    # AST — guaranteeing perfect marker alignment. A file that no longer
+    # parses is reported as a failure (its .bak still holds the pre-patch state).
+    for filepath, header in touched_py.items():
+        if not filepath.exists():
+            continue
+        label = f"Post-check [{filepath.name}]"
+        try:
+            ast.parse(filepath.read_text(encoding="utf-8"))
+        except SyntaxError as e:
+            _fail(label, (
+                f"patched file no longer parses (line {e.lineno}: {e.msg}). Re-emit the "
+                "affected cell completely via CELL_PATCH, or the whole file via REPLACE."
+            ))
+            continue
+        strip_file(filepath, strip_prompt=True, strip_markers=True)
+        annotate_file(filepath, header=header)
+
+    # Ordered report: successes and failures exactly as encountered.
+    for _, line in results:
+        print(line)
+
+    any_success = any(ok for ok, _ in results)
+    all_ok = all(ok for ok, _ in results)
+    if any_success or not results:
+        _write_changelog(changelog_entries, target_dir)
+    else:
+        logging.warning("No operations applied; changelog not recorded.")
+    return all_ok
 # %% [func:apply_revisions:end]
+
+# %% [func:strip_file:start]
 def strip_file(
     filepath: Path,
     *,
@@ -689,6 +764,9 @@ def strip_file(
     strip_markers: bool = True,
 ) -> int:
     """Remove the AI schema header and/or `# %% [...]` cell markers from a file.
+
+    `# %% [knobs:...]` markers are always preserved — they delimit
+    user-authored protected blocks, not CellSmith annotations.
 
     Returns the number of lines removed. No-ops on missing file.
     """
@@ -722,7 +800,12 @@ def strip_file(
                     continue
                 schema_just_ended = False
 
-        if strip_markers and stripped.startswith("# %% [") and stripped.endswith("]"):
+        if (
+            strip_markers
+            and stripped.startswith("# %% [")
+            and stripped.endswith("]")
+            and not stripped.startswith("# %% [knobs:")
+        ):
             continue
 
         out.append(line)
@@ -732,8 +815,9 @@ def strip_file(
         with open(filepath, "w", encoding="utf-8") as f:
             f.writelines(out)
     return removed
-# %% [func:_load_gitignore:start]
 # %% [func:strip_file:end]
+
+# %% [func:_load_gitignore:start]
 def _load_gitignore(root: Path):
     """Return a pathspec.PathSpec built from <root>/.gitignore, or None."""
     gi = root / ".gitignore"
@@ -796,39 +880,63 @@ def rollback_revisions(data: dict, target_dir: Path) -> None:
             old_file = target_dir / rev["filename"]
             new_file = target_dir / rev.get("new_filename", "")
             if new_file.exists():
-                new_file.parent.mkdir(parents=True, exist_ok=True)
+                old_file.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(new_file, old_file)
                 logging.info(f"Reverted FILE_MOVE: {new_file} -> {old_file}")
+
+    def _restore_from_backup(target_file: Path) -> bool:
+        """Restore target_file from its .bak (rotating numbered backups down).
+        Returns True if a backup existed and was restored."""
+        backup_path = target_file.with_suffix(target_file.suffix + ".bak")
+        if not backup_path.exists():
+            return False
+        shutil.copy2(backup_path, target_file)
+        backup_path.unlink()
+        logging.info(f"Restored file from backup (rollback): {target_file}")
+
+        idx = 1
+        while target_file.with_suffix(f"{target_file.suffix}.bak.{idx}").exists():
+            old_bak = target_file.with_suffix(f"{target_file.suffix}.bak.{idx}")
+            if idx == 1:
+                new_bak = target_file.with_suffix(target_file.suffix + ".bak")
+            else:
+                new_bak = target_file.with_suffix(f"{target_file.suffix}.bak.{idx-1}")
+            shutil.move(old_bak, new_bak)
+            idx += 1
+        return True
 
     artifacts = data.get("artifacts", [])
     for artifact in artifacts:
         target_file = target_dir / artifact["filename"]
+        # If the artifact overwrote a pre-existing file, a backup was taken
+        # at patch time — restore it. Otherwise the artifact was net-new:
+        # delete it.
+        if _restore_from_backup(target_file):
+            continue
         if target_file.exists():
             target_file.unlink()
             logging.info(f"Removed created artifact (rollback): {target_file}")
 
     for rev in revisions:
-        if rev.get("revision_type") == "FILE_MOVE":
+        rev_type = rev.get("revision_type")
+        if rev_type == "FILE_MOVE":
             continue
-            
+
         target_file = target_dir / rev["filename"]
-        backup_path = target_file.with_suffix(target_file.suffix + ".bak")
-        
-        if backup_path.exists():
-            shutil.copy2(backup_path, target_file)
-            backup_path.unlink()
-            logging.info(f"Restored file from backup (rollback): {target_file}")
-            
-            idx = 1
-            while target_file.with_suffix(f"{target_file.suffix}.bak.{idx}").exists():
-                old_bak = target_file.with_suffix(f"{target_file.suffix}.bak.{idx}")
-                new_bak = target_file.with_suffix(target_file.suffix + ".bak") if idx == 1 else target_file.with_suffix(f"{target_file.suffix}.bak.{idx-1}")
-                shutil.move(old_bak, new_bak)
-                idx += 1
-        else:
-            pass
-# %% [func:main:start]
+
+        if _restore_from_backup(target_file):
+            continue
+
+        # No backup: the revision created this file from scratch
+        # (FILE_CREATE, or REPLACE on a previously missing path). Undo by
+        # deleting it. CELL_PATCH/CELL_CREATE always back up first, so a
+        # missing backup for those means there's nothing to undo.
+        if rev_type in ("FILE_CREATE", "REPLACE") and target_file.exists():
+            target_file.unlink()
+            logging.info(f"Removed created file (rollback): {target_file}")
 # %% [func:rollback_revisions:end]
+
+# %% [func:main:start]
 def main() -> None:
     parser = argparse.ArgumentParser(description="AST-based Code Annotator and JSON Patcher")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -866,7 +974,6 @@ def main() -> None:
     strip_parser.add_argument("--include-hidden", action="store_true", help="Include dotted dirs/files (dir mode)")
     strip_parser.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompt")
 
-    # New Rollback Parser
     rollback_parser = subparsers.add_parser("rollback", help="Rollback changes applied by a JSON patch")
     rollback_parser.add_argument("json_file", type=Path, help="JSON response file used for patching")
     rollback_parser.add_argument("target_dir", type=Path, default=Path("."), nargs="?", help="Root directory for patching")
@@ -939,20 +1046,22 @@ def main() -> None:
         if not args.json_file.exists():
             logging.error(f"JSON file not found: {args.json_file}")
             sys.exit(1)
-        
+
         with open(args.json_file, "r", encoding="utf-8") as f:
             try:
                 data = json.load(f)
             except json.JSONDecodeError as e:
                 logging.error(f"Invalid JSON: {e}")
                 sys.exit(1)
-                
+
         if args.command == "patch":
             try:
-                apply_revisions(data, args.target_dir)
+                all_ok = apply_revisions(data, args.target_dir)
             except ValueError as e:
                 logging.error(f"patch rejected: {e}")
                 sys.exit(2)
+            if not all_ok:
+                sys.exit(3)
         elif args.command == "rollback":
             rollback_revisions(data, args.target_dir)
 # %% [func:main:end]
