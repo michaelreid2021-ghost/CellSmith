@@ -491,6 +491,114 @@ def apply_revisions(data: dict, target_dir: Path) -> None:
     changelog_entries = _validate_changelog(data.get("changelog"))
     backed_up_files = set()
 
+    def _ensure_backup(filepath: Path):
+        if filepath not in backed_up_files:
+            create_backup(filepath)
+            backed_up_files.add(filepath)
+
+    artifacts = data.get("artifacts", [])
+    for artifact in artifacts:
+        target_file = target_dir / artifact["filename"]
+        target_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        code = artifact["code_content"]
+        if not code.startswith("# %% [ai_schema"):
+            code = POINTER_HEADER + code
+            
+        with open(target_file, "w", encoding="utf-8") as f:
+            f.write(code)
+        logging.info(f"Created artifact: {target_file}")
+
+    revisions = data.get("revisions", [])
+    for rev in revisions:
+        target_file = target_dir / rev["filename"]
+        rev_type = rev.get("revision_type")
+        code = rev.get("code_content", "")
+
+        if rev_type == "FILE_MOVE":
+            new_filename = rev.get("new_filename")
+            if not new_filename:
+                logging.error(f"FILE_MOVE missing 'new_filename' for {target_file}")
+                continue
+            new_target = target_dir / new_filename
+            if not target_file.exists():
+                logging.warning(f"Target missing for FILE_MOVE: {target_file}")
+                continue
+            _ensure_backup(target_file)
+            new_target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(target_file, new_target)
+            logging.info(f"Moved {target_file} to {new_target}")
+            continue
+
+        is_new_file = not target_file.exists()
+        if is_new_file and rev_type not in ("REPLACE", "FILE_CREATE"):
+            logging.warning(f"Target file missing for revision, skipping: {target_file}")
+            continue
+
+        if not is_new_file:
+            _ensure_backup(target_file)
+
+        if rev_type in ("REPLACE", "FILE_CREATE"):
+            if is_new_file and not code.startswith("# %% [ai_schema"):
+                code = POINTER_HEADER + code
+            target_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(target_file, "w", encoding="utf-8") as f:
+                f.write(code)
+            action = "Created" if is_new_file else "Replaced"
+            logging.info(f"{action} file via {rev_type}: {target_file}")
+
+        elif rev_type == "CELL_PATCH":
+            cell_id = rev.get("cell_id")
+            if not cell_id:
+                logging.error(f"CELL_PATCH missing cell_id for {target_file}")
+                continue
+
+            marker = f"# %% [{cell_id}]"
+            with open(target_file, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+
+            start_idx = -1
+            end_idx = len(lines)
+
+            for i, line in enumerate(lines):
+                if line.strip() == marker:
+                    start_idx = i
+                    break
+
+            if start_idx == -1:
+                logging.error(f"Marker {marker} not found in {target_file}")
+                continue
+
+            is_start_block = ":start]" in marker
+            expected_end_marker = marker.replace(":start]", ":end]") if is_start_block else None
+
+            for i in range(start_idx + 1, len(lines)):
+                stripped = lines[i].strip()
+                if is_start_block:
+                    if stripped == expected_end_marker:
+                        end_idx = i + 1
+                        break
+                else:
+                    if stripped.startswith("# %% ["):
+                        end_idx = i
+                        break
+
+            if not code.endswith("\n"):
+                code += "\n"
+
+            new_lines = lines[:start_idx] + [code] + lines[end_idx:]
+
+            with open(target_file, "w", encoding="utf-8") as f:
+                f.writelines(new_lines)
+
+            logging.info(f"Patched cell {cell_id} in {target_file}")
+
+        elif rev_type == "CELL_CREATE":
+            with open(target_file, "a", encoding="utf-8") as f:
+                f.write("\n" + code + "\n")
+            logging.info(f"Appended new cell to {target_file}")
+
+    _write_changelog(changelog_entries, target_dir)
 # %% [func:_ensure_backup]
     def _ensure_backup(filepath: Path):
         if filepath not in backed_up_files:
