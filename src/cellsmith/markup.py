@@ -1,41 +1,4 @@
 # filepath: cellsmith.py
-# %% [ai_schema:instructions]
-# AI INSTRUCTIONS - PATCH SCHEMA:
-#
-# To modify this file, return a JSON response with the following structure.
-# When using CELL_PATCH, `cell_id` MUST be an exact marker that exists in the file.
-#
-# {
-#   "revisions": [
-#     {
-#       "filename": "path/to/this/file.py",
-#       "revision_type": "CELL_PATCH",  # Or "REPLACE", "CELL_CREATE"
-#       "cell_id": "func:my_function",  # Match an exact marker (e.g. 'imports', 'func:x', 'method:Cls.x', 'module:init', 'module:main_guard')
-#       "code_content": "# %% [func:my_function]\ndef my_function():\n    pass\n"
-#     }
-#   ],
-#   "changelog": [
-#     {
-#       "change_type": "bug_fix",   # Required. One of: new_feature, correcting_implementation, bug_fix, refactor, schema_migration
-#       "summary": "Concise single-sentence description of the final state achieved.",
-#       "details": ["Optional bullet of granular technical change."]
-#     }
-#   ]
-# }
-#
-# BLOCKING GATE: every patch response MUST include at least one `changelog`
-# entry. Classify your work strictly using the `change_type` enum. Write the
-# `summary` as affirmative documentation of the final state — not a recount
-# of past conversational errors.
-#
-# Choose the most efficient tool for the job (the user pays per token):
-#   * REPLACE     : For new files, total rewrites, or files under 50 lines.
-#   * CELL_PATCH  : For surgical updates to a specific function/class/method.
-#                   `cell_id` MUST exist in the current SKELETON of the file.
-#   * CELL_CREATE : To append new logic. Use `insert_after` to place it.
-# %% [ai_schema:end]
-
-
 # %% [imports]
 import argparse
 import ast
