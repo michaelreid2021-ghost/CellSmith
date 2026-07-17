@@ -1,3 +1,41 @@
+# %% [ai_schema:instructions]
+# AI INSTRUCTIONS - PATCH SCHEMA:
+#
+# To modify this file, return a JSON response with the following structure.
+# When using CELL_PATCH, `cell_id` MUST be an exact marker that exists in the file.
+#
+# {
+#   "revisions": [
+#     {
+#       "filename": "path/to/this/file.py",
+#       "revision_type": "CELL_PATCH",  # Or "REPLACE", "CELL_CREATE"
+#       "cell_id": "func:my_function",  # Match an exact marker (e.g. 'imports', 'func:x', 'method:Cls.x', 'module:init', 'module:main_guard')
+#       "code_content": "# %% [func:my_function]\ndef my_function():\n    pass\n"
+#     }
+#   ],
+#   "changelog": [
+#     {
+#       "change_type": "bug_fix",   # Required. One of: new_feature, correcting_implementation, bug_fix, refactor, schema_migration
+#       "summary": "Concise single-sentence description of the final state achieved.",
+#       "details": ["Optional bullet of granular technical change."]
+#     }
+#   ]
+# }
+#
+# BLOCKING GATE: every patch response MUST include at least one `changelog`
+# entry. Classify your work strictly using the `change_type` enum. Write the
+# `summary` as affirmative documentation of the final state — not a recount
+# of past conversational errors.
+#
+# Choose the most efficient tool for the job (the user pays per token):
+#   * REPLACE     : For new files, total rewrites, or files under 50 lines.
+#   * CELL_PATCH  : For surgical updates to a specific function/class/method.
+#                   `cell_id` MUST exist in the current SKELETON of the file.
+#   * CELL_CREATE : To append new logic. Use `insert_after` to place it.
+# %% [ai_schema:end]
+
+
+# %% [imports]
 import argparse
 import ast
 import json
@@ -8,6 +46,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Tuple
 
+# %% [module:init]
 try:
     from cellsmith import __version__
 except ImportError:
@@ -194,43 +233,54 @@ cellsmith rollback patch.json .
 on every run. Don't edit by hand.*
 """
 
+# %% [class:CellAnnotator]
 class CellAnnotator(ast.NodeVisitor):
+# %% [method:CellAnnotator.__init__]
     def __init__(self):
         self.insertions: List[Tuple[int, str]] = []
         self.current_class: str = ""
         self.imports_marked: bool = False
 
+# %% [method:CellAnnotator._handle_import]
     def _handle_import(self, node: ast.AST) -> None:
         if not self.imports_marked and getattr(node, 'col_offset', -1) == 0:
             self.insertions.append((node.lineno, "\n# %% [imports]\n"))
             self.imports_marked = True
         self.generic_visit(node)
 
+# %% [method:CellAnnotator.visit_Import]
     def visit_Import(self, node: ast.Import) -> None:
         self._handle_import(node)
 
+# %% [method:CellAnnotator.visit_ImportFrom]
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         self._handle_import(node)
 
+# %% [method:CellAnnotator.visit_ClassDef]
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        marker = f"# %% [class:{node.name}]\n"
-        self.insertions.append((node.lineno, marker))
+        base_id = f"class:{node.name}"
+        self.insertions.append((node.lineno, f"# %% [{base_id}:start]\n"))
+        if hasattr(node, "end_lineno") and node.end_lineno:
+            self.insertions.append((node.end_lineno + 1, f"# %% [{base_id}:end]\n"))
         previous_class = self.current_class
         self.current_class = node.name
         self.generic_visit(node)
         self.current_class = previous_class
-
+# %% [method:CellAnnotator.visit_FunctionDef]
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         if self.current_class:
-            marker = f"# %% [method:{self.current_class}.{node.name}]\n"
+            base_id = f"method:{self.current_class}.{node.name}"
         else:
-            marker = f"# %% [func:{node.name}]\n"
-        self.insertions.append((node.lineno, marker))
+            base_id = f"func:{node.name}"
+        self.insertions.append((node.lineno, f"# %% [{base_id}:start]\n"))
+        if hasattr(node, "end_lineno") and node.end_lineno:
+            self.insertions.append((node.end_lineno + 1, f"# %% [{base_id}:end]\n"))
         self.generic_visit(node)
-
+# %% [method:CellAnnotator.visit_AsyncFunctionDef]
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         self.visit_FunctionDef(node)
 
+# %% [method:CellAnnotator.visit_Module]
     def visit_Module(self, node: ast.Module) -> None:
         """Mark clusters of module-level code that aren't imports/funcs/classes.
 
@@ -279,6 +329,7 @@ class CellAnnotator(ast.NodeVisitor):
                 suffix = f":{init_count}" if init_count > 1 else ""
                 self.insertions.append((stmt.lineno, f"# %% [module:init{suffix}]\n"))
 
+# %% [func:annotate_file]
 def annotate_file(filepath: Path, header: str = FULL_SCHEMA_HEADER) -> None:
     if not filepath.exists():
         logging.error(f"File not found: {filepath}")
@@ -348,7 +399,8 @@ def annotate_file(filepath: Path, header: str = FULL_SCHEMA_HEADER) -> None:
         for line in lines[:20]
     )
     if not already_has_header:
-        lines.insert(0, header)
+        file_header = f"# filepath: {filepath.as_posix()}\n"
+        lines.insert(0, file_header + header)
         insert_count += 1
 
     if insert_count == 0:
@@ -359,13 +411,25 @@ def annotate_file(filepath: Path, header: str = FULL_SCHEMA_HEADER) -> None:
         f.writelines(lines)
     
     logging.info(f"Annotated {filepath} with {insert_count} new elements.")
-
+# %% [func:create_backup]
 def create_backup(filepath: Path) -> None:
     if filepath.exists():
-        backup_path = filepath.with_suffix(filepath.suffix + ".bak")
-        shutil.copy2(filepath, backup_path)
-        logging.info(f"Created backup: {backup_path}")
+        backup_idx = 1
+        while filepath.with_suffix(f"{filepath.suffix}.bak.{backup_idx}").exists():
+            backup_idx += 1
+            
+        for i in range(backup_idx - 1, 0, -1):
+            old_bak = filepath.with_suffix(f"{filepath.suffix}.bak.{i}")
+            new_bak = filepath.with_suffix(f"{filepath.suffix}.bak.{i+1}")
+            shutil.move(old_bak, new_bak)
 
+        backup_path = filepath.with_suffix(filepath.suffix + ".bak")
+        if backup_path.exists():
+            shutil.move(backup_path, filepath.with_suffix(filepath.suffix + ".bak.1"))
+
+        shutil.copy2(filepath, backup_path)
+        logging.info(f"Created versioned backup: {backup_path}")
+# %% [func:_validate_changelog]
 def _validate_changelog(entries: list) -> list:
     """Validate changelog entries from a patch payload. Raise ValueError on any issue.
 
@@ -401,6 +465,7 @@ def _validate_changelog(entries: list) -> list:
     return normalized
 
 
+# %% [func:write_skill_doc]
 def write_skill_doc(project_root: Path) -> Path:
     """Write the markdown skill doc at the project root. Always overwrites
     (single source-of-truth: SKILL_DOC_MARKDOWN). Returns the path written."""
@@ -410,6 +475,7 @@ def write_skill_doc(project_root: Path) -> Path:
     return path
 
 
+# %% [func:_write_changelog]
 def _write_changelog(entries: list, target_dir: Path) -> None:
     """Append validated entries (one JSON object per line) to the project changelog."""
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -420,30 +486,63 @@ def _write_changelog(entries: list, target_dir: Path) -> None:
     logging.info(f"Recorded {len(entries)} changelog entry(s) in {path}")
 
 
+# %% [func:apply_revisions]
 def apply_revisions(data: dict, target_dir: Path) -> None:
-    # Blocking gate: enforce the schema's changelog requirement before any disk writes.
     changelog_entries = _validate_changelog(data.get("changelog"))
+    backed_up_files = set()
+
+# %% [func:_ensure_backup]
+    def _ensure_backup(filepath: Path):
+        if filepath not in backed_up_files:
+            create_backup(filepath)
+            backed_up_files.add(filepath)
 
     artifacts = data.get("artifacts", [])
     for artifact in artifacts:
         target_file = target_dir / artifact["filename"]
         target_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        code = artifact["code_content"]
+        if not code.startswith("# %% [ai_schema"):
+            code = POINTER_HEADER + code
+            
         with open(target_file, "w", encoding="utf-8") as f:
-            f.write(artifact["code_content"])
+            f.write(code)
         logging.info(f"Created artifact: {target_file}")
 
     revisions = data.get("revisions", [])
     for rev in revisions:
         target_file = target_dir / rev["filename"]
-        if not target_file.exists():
-            logging.warning(f"Target file missing for revision, skipping: {target_file}")
-            continue
-
-        create_backup(target_file)
         rev_type = rev.get("revision_type")
         code = rev.get("code_content", "")
 
+        if rev_type == "FILE_MOVE":
+            new_filename = rev.get("new_filename")
+            if not new_filename:
+                logging.error(f"FILE_MOVE missing 'new_filename' for {target_file}")
+                continue
+            new_target = target_dir / new_filename
+            if not target_file.exists():
+                logging.warning(f"Target missing for FILE_MOVE: {target_file}")
+                continue
+            _ensure_backup(target_file)
+            new_target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(target_file, new_target)
+            logging.info(f"Moved {target_file} to {new_target}")
+            continue
+
+        is_new_file = not target_file.exists()
+        if is_new_file and rev_type != "REPLACE":
+            logging.warning(f"Target file missing for revision, skipping: {target_file}")
+            continue
+
+        if not is_new_file:
+            _ensure_backup(target_file)
+
         if rev_type == "REPLACE":
+            if is_new_file and not code.startswith("# %% [ai_schema"):
+                code = POINTER_HEADER + code
+            target_file.parent.mkdir(parents=True, exist_ok=True)
             with open(target_file, "w", encoding="utf-8") as f:
                 f.write(code)
             logging.info(f"Replaced entire file: {target_file}")
@@ -500,7 +599,7 @@ def apply_revisions(data: dict, target_dir: Path) -> None:
             logging.info(f"Appended new cell to {target_file}")
 
     _write_changelog(changelog_entries, target_dir)
-
+# %% [func:strip_file]
 def strip_file(
     filepath: Path,
     *,
@@ -524,6 +623,8 @@ def strip_file(
         stripped = line.strip()
 
         if strip_prompt:
+            if not out and stripped.startswith("# filepath:"):
+                continue
             if stripped in ("# %% [ai_schema:instructions]", "# %% [ai_schema:pointer]"):
                 skipping_schema = True
                 continue
@@ -549,8 +650,7 @@ def strip_file(
         with open(filepath, "w", encoding="utf-8") as f:
             f.writelines(out)
     return removed
-
-
+# %% [func:_load_gitignore]
 def _load_gitignore(root: Path):
     """Return a pathspec.PathSpec built from <root>/.gitignore, or None."""
     gi = root / ".gitignore"
@@ -565,6 +665,7 @@ def _load_gitignore(root: Path):
         return pathspec.PathSpec.from_lines("gitwildmatch", f.readlines())
 
 
+# %% [func:iter_python_files]
 def iter_python_files(
     target: Path,
     *,
@@ -601,9 +702,19 @@ def iter_python_files(
     return sorted(results)
 
 
+# %% [func:rollback_revisions]
 def rollback_revisions(data: dict, target_dir: Path) -> None:
     """Reverts changes applied by a JSON patch."""
-    # 1. Rollback artifacts (delete newly created files)
+    revisions = data.get("revisions", [])
+    for rev in revisions:
+        if rev.get("revision_type") == "FILE_MOVE":
+            old_file = target_dir / rev["filename"]
+            new_file = target_dir / rev.get("new_filename", "")
+            if new_file.exists():
+                new_file.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(new_file, old_file)
+                logging.info(f"Reverted FILE_MOVE: {new_file} -> {old_file}")
+
     artifacts = data.get("artifacts", [])
     for artifact in artifacts:
         target_file = target_dir / artifact["filename"]
@@ -611,19 +722,27 @@ def rollback_revisions(data: dict, target_dir: Path) -> None:
             target_file.unlink()
             logging.info(f"Removed created artifact (rollback): {target_file}")
 
-    # 2. Rollback revisions (restore from .bak)
-    revisions = data.get("revisions", [])
     for rev in revisions:
+        if rev.get("revision_type") == "FILE_MOVE":
+            continue
+            
         target_file = target_dir / rev["filename"]
         backup_path = target_file.with_suffix(target_file.suffix + ".bak")
         
         if backup_path.exists():
             shutil.copy2(backup_path, target_file)
-            backup_path.unlink()  # Clean up the backup file after restoring
+            backup_path.unlink()
             logging.info(f"Restored file from backup (rollback): {target_file}")
+            
+            idx = 1
+            while target_file.with_suffix(f"{target_file.suffix}.bak.{idx}").exists():
+                old_bak = target_file.with_suffix(f"{target_file.suffix}.bak.{idx}")
+                new_bak = target_file.with_suffix(target_file.suffix + ".bak") if idx == 1 else target_file.with_suffix(f"{target_file.suffix}.bak.{idx-1}")
+                shutil.move(old_bak, new_bak)
+                idx += 1
         else:
-            logging.warning(f"Backup file not found, cannot rollback: {target_file}")
-
+            pass
+# %% [func:main]
 def main() -> None:
     parser = argparse.ArgumentParser(description="AST-based Code Annotator and JSON Patcher")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -751,5 +870,6 @@ def main() -> None:
         elif args.command == "rollback":
             rollback_revisions(data, args.target_dir)
 
+# %% [module:main_guard]
 if __name__ == "__main__":
     main()
