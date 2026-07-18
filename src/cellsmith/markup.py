@@ -74,10 +74,23 @@ FULL_SCHEMA_HEADER = (
     "#                   `code_content` MUST be the COMPLETE cell — beginning with\n"
     "#                   its `:start` marker line and including the matching `:end`\n"
     "#                   marker — never a partial diff.\n"
-    "#   * CELL_CREATE : To append new logic to an existing file.\n"
+    "#   * CELL_CREATE : To add new logic to an existing file. Plain code, no\n"
+    "#                   markers. Optional `append_after`: an existing cell_id\n"
+    "#                   (e.g. \"func:top:end\", \"method:Cls.run:end\") — the new\n"
+    "#                   code is inserted right after that cell. Omitted: inserts\n"
+    "#                   before `module:main_guard` (or EOF if none). To add a\n"
+    "#                   METHOD, use append_after with a method of that class and\n"
+    "#                   emit the code already indented for the class body.\n"
     "#   * FILE_CREATE : To create a brand new file. Plain code only — annotation\n"
     "#                   is handled by the tool, same as REPLACE.\n"
     "#   * FILE_MOVE   : To move/rename a file (requires 'new_filename' field).\n"
+    "#\n"
+    "# Nested (inner) functions have NO markers and are never patchable on their\n"
+    "# own — they are part of their parent's cell. CELL_PATCH the parent.\n"
+    "# Prefer nested functions only as a LAST RESORT (true closures). If you\n"
+    "# encounter one that could be a module-level function or private method,\n"
+    "# propose extracting it to the user ONCE — it makes the code directly\n"
+    "# patchable. If the user declines, respect that and do not raise it again.\n"
     "#\n"
     "# `cellsmith patch` prints a numbered per-revision report (OK / FAILED).\n"
     "# If some revisions fail, re-emit ONLY the FAILED ones — the OK ones are\n"
@@ -163,13 +176,34 @@ cellsmith status
 | `cell_id` | for CELL_PATCH | Must match an existing `# %% [<cell_id>]` marker. For paired cells, target the `:start` marker |
 | `code_content` | for patching | For CELL_PATCH: the **complete cell**, beginning with its `:start` marker and including the matching `:end` marker — never a partial diff. For REPLACE / FILE_CREATE: **plain code only** — no markers, no schema header (annotation is applied automatically after a successful patch) |
 | `new_filename` | for FILE_MOVE | The destination path |
+| `append_after` | optional, CELL_CREATE | An existing cell_id (e.g. `func:top:end`, `method:Cls.run:end`); the new code is inserted immediately after that cell. A `:start` id resolves to its matching `:end`. Omitted: inserts before `module:main_guard`, or at EOF if there is none |
 
 Tool selection (the user pays per token — pick the laconic one):
 - `REPLACE` — total rewrites or files under ~50 lines (plain code, no markers)
 - `CELL_PATCH` — surgical updates to a specific function/class/method
-- `CELL_CREATE` — append new logic to an annotated file
+- `CELL_CREATE` — add new logic to an annotated file (plain code, no markers; place with `append_after`)
 - `FILE_CREATE` — brand new file from scratch (plain code, no markers)
 - `FILE_MOVE` — rename or move a file
+
+### Placement, classes, and nesting
+
+- **Adding a method to a class:** use CELL_CREATE with `append_after` set to
+  an existing method of that class (e.g. `"method:UserService.validate:end"`)
+  and emit the code **already indented for the class body**. Markers are
+  generated automatically after apply.
+- **Nested (inner) functions have no markers** and are never patchable on
+  their own — they are part of their parent function's cell. To change one,
+  CELL_PATCH the parent and emit the parent's complete cell.
+- **Prefer nested functions only as a last resort** (true closures over local
+  state). When writing new code, default to module-level functions or private
+  methods — they get their own cells and stay cheaply patchable. If you
+  encounter an existing nested function that doesn't need to be one, propose
+  extracting it to the user **once**; if the user declines, respect that
+  choice and don't raise it again.
+- **`__init__` is a normal method cell:** `method:Cls.__init__:start`.
+- Indentation is your responsibility; if it's wrong the file won't parse and
+  the patch report will tell you (`Post-check FAILED`), with the previous
+  version safe in a backup.
 
 ### The patch report
 
@@ -718,11 +752,52 @@ def apply_revisions(data: dict, target_dir: Path) -> bool:
             _ok(label, f"patched {cell_id} in {filename}")
 
         elif rev_type == "CELL_CREATE":
+            with open(target_file, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+
+            insert_idx = len(lines)
+            placement = "at end of file"
+            append_after = rev.get("append_after")
+            if append_after:
+                anchor = f"# %% [{append_after}]"
+                a_idx = -1
+                for i, line in enumerate(lines):
+                    if line.strip() == anchor:
+                        a_idx = i
+                        break
+                if a_idx == -1:
+                    _fail(label, (
+                        f"`append_after` marker `{anchor}` not found in {filename}. "
+                        "Use an exact existing marker from the current file, "
+                        "e.g. `func:name:end` or `method:Cls.name:end`."
+                    ))
+                    continue
+                # If given a `:start` marker, resolve to the matching `:end`
+                # so the new cell lands after the whole block.
+                if ":start]" in anchor:
+                    end_anchor = anchor.replace(":start]", ":end]")
+                    for i in range(a_idx + 1, len(lines)):
+                        if lines[i].strip() == end_anchor:
+                            a_idx = i
+                            break
+                insert_idx = a_idx + 1
+                placement = f"after {append_after}"
+            else:
+                # Default: land BEFORE the main guard, not after it.
+                for i, line in enumerate(lines):
+                    if line.strip() == "# %% [module:main_guard]":
+                        insert_idx = i
+                        placement = "before module:main_guard"
+                        break
+
+            if not code.endswith("\n"):
+                code += "\n"
+            new_lines = lines[:insert_idx] + ["\n" + code] + lines[insert_idx:]
             _ensure_backup(target_file)
             _touch(target_file)
-            with open(target_file, "a", encoding="utf-8") as f:
-                f.write("\n" + code + "\n")
-            _ok(label, f"appended new cell to {filename}")
+            with open(target_file, "w", encoding="utf-8") as f:
+                f.writelines(new_lines)
+            _ok(label, f"inserted new cell in {filename} ({placement})")
 
     # Post-pass: normalize every touched .py file. Strip whatever markers /
     # headers the payload did or didn't include, then re-annotate from the
