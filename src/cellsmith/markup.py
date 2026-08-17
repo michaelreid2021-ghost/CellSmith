@@ -1,4 +1,70 @@
-# filepath: cellsmith.py
+# filepath: markup.py
+# %% [ai_schema:instructions]
+# AI INSTRUCTIONS - PATCH SCHEMA:
+#
+# To modify this file, return a JSON response with the following structure.
+# When using CELL_PATCH, `cell_id` MUST be an exact marker that exists in the file.
+# Functions/classes/methods use paired markers: `func:name:start` / `func:name:end`
+# (likewise `class:X:start` and `method:Cls.x:start`). Patch the `:start` cell;
+# everything through the matching `:end` marker is replaced. Simple cells like
+# `imports` and `module:init` have a single marker with no suffix.
+#
+# {
+#   "revisions": [
+#     {
+#       "filename": "path/to/this/file.py",
+#       "revision_type": "CELL_PATCH",  # Or "REPLACE", "CELL_CREATE", "FILE_CREATE", "FILE_MOVE"
+#       "cell_id": "func:my_function:start",  # Match an exact marker (e.g. 'imports', 'func:x:start', 'method:Cls.x:start')
+#       "code_content": "# %% [func:my_function:start]\ndef my_function():\n    pass\n# %% [func:my_function:end]\n"
+#     }
+#   ],
+#   "changelog": [
+#     {
+#       "change_type": "bug_fix",   # Required. One of: new_feature, correcting_implementation, bug_fix, refactor, schema_migration
+#       "summary": "Concise single-sentence description of the final state achieved.",
+#       "details": ["Optional bullet of granular technical change."]
+#     }
+#   ]
+# }
+#
+# BLOCKING GATE: every patch response MUST include at least one `changelog`
+# entry. Classify your work strictly using the `change_type` enum. Write the
+# `summary` as affirmative documentation of the final state — not a recount
+# of past conversational errors.
+#
+# Choose the most efficient tool for the job (the user pays per token):
+#   * REPLACE     : For total rewrites or files under 50 lines. Emit PLAIN
+#                   code only — no cell markers, no schema header. The tool
+#                   re-annotates the file automatically after a successful patch.
+#   * CELL_PATCH  : For surgical updates to a specific function/class/method.
+#                   `cell_id` MUST exist in the current SKELETON of the file.
+#                   `code_content` MUST be the COMPLETE cell — beginning with
+#                   its `:start` marker line and including the matching `:end`
+#                   marker — never a partial diff.
+#   * CELL_CREATE : To add new logic to an existing file. Plain code, no
+#                   markers. Optional `append_after`: an existing cell_id
+#                   (e.g. "func:top:end", "method:Cls.run:end") — the new
+#                   code is inserted right after that cell. Omitted: inserts
+#                   before `module:main_guard` (or EOF if none). To add a
+#                   METHOD, use append_after with a method of that class and
+#                   emit the code already indented for the class body.
+#   * FILE_CREATE : To create a brand new file. Plain code only — annotation
+#                   is handled by the tool, same as REPLACE.
+#   * FILE_MOVE   : To move/rename a file (requires 'new_filename' field).
+#
+# Nested (inner) functions have NO markers and are never patchable on their
+# own — they are part of their parent's cell. CELL_PATCH the parent.
+# Prefer nested functions only as a LAST RESORT (true closures). If you
+# encounter one that could be a module-level function or private method,
+# propose extracting it to the user ONCE — it makes the code directly
+# patchable. If the user declines, respect that and do not raise it again.
+#
+# `cellsmith patch` prints a numbered per-revision report (OK / FAILED).
+# If some revisions fail, re-emit ONLY the FAILED ones — the OK ones are
+# already applied and must not be re-sent.
+# %% [ai_schema:end]
+
+
 # %% [imports]
 import argparse
 import ast
@@ -261,27 +327,8 @@ class CellAnnotator(ast.NodeVisitor):
     def __init__(self):
         self.insertions: List[Tuple[int, str]] = []
         self.current_class: str = ""
-        self.imports_marked: bool = False
         self.function_depth: int = 0
 # %% [method:CellAnnotator.__init__:end]
-
-# %% [method:CellAnnotator._handle_import:start]
-    def _handle_import(self, node: ast.AST) -> None:
-        if not self.imports_marked and getattr(node, 'col_offset', -1) == 0:
-            self.insertions.append((node.lineno, "\n# %% [imports]\n"))
-            self.imports_marked = True
-        self.generic_visit(node)
-# %% [method:CellAnnotator._handle_import:end]
-
-# %% [method:CellAnnotator.visit_Import:start]
-    def visit_Import(self, node: ast.Import) -> None:
-        self._handle_import(node)
-# %% [method:CellAnnotator.visit_Import:end]
-
-# %% [method:CellAnnotator.visit_ImportFrom:start]
-    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        self._handle_import(node)
-# %% [method:CellAnnotator.visit_ImportFrom:end]
 
 # %% [method:CellAnnotator.visit_ClassDef:start]
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
@@ -297,8 +344,6 @@ class CellAnnotator(ast.NodeVisitor):
 
 # %% [method:CellAnnotator.visit_FunctionDef:start]
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        # Only annotate module-level functions and class-direct methods.
-        # Nested (closure) functions live inside their parent's cell.
         if self.function_depth == 0:
             if self.current_class:
                 base_id = f"method:{self.current_class}.{node.name}"
@@ -319,34 +364,51 @@ class CellAnnotator(ast.NodeVisitor):
 
 # %% [method:CellAnnotator.visit_Module:start]
     def visit_Module(self, node: ast.Module) -> None:
-        """Mark clusters of module-level code that aren't imports/funcs/classes.
+        """Mark top-level statements into paired, contiguous cells.
 
-        These would otherwise be swallowed by a CELL_PATCH on the preceding
-        cell (which scans forward until the next marker — or EOF if there is
-        none).  We emit:
-          # %% [module:main_guard]  for `if __name__ == "__main__":` blocks
-          # %% [module:init]        for everything else (instantiations, etc.)
-        Multiple non-contiguous clusters of the latter get numbered:
-          module:init, module:init:2, module:init:3 …
+        - Consecutive top-level imports form paired cells: `# %% [imports:start]` / `:end`
+        - Top-level `if __name__ == '__main__':` forms paired `module:main_guard`
+        - Other module-level clusters form paired `module:init` blocks
         """
         self.generic_visit(node)
 
-        SKIP = (
-            ast.Import, ast.ImportFrom,
-            ast.FunctionDef, ast.AsyncFunctionDef,
-            ast.ClassDef,
-        )
+        FUNC_CLASS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+        IMPORT_NODES = (ast.Import, ast.ImportFrom)
 
+        current_kind = None
+        group_start_line = None
+        group_end_line = None
+        import_count = 0
         init_count = 0
-        in_group = False
+
+        def _flush_group():
+            nonlocal current_kind, group_start_line, group_end_line, import_count, init_count
+            if current_kind is None or group_start_line is None:
+                return
+            if current_kind == "import":
+                import_count += 1
+                suffix = f":{import_count}" if import_count > 1 else ""
+                cell_id = f"imports{suffix}"
+            elif current_kind == "main_guard":
+                cell_id = "module:main_guard"
+            else:
+                init_count += 1
+                suffix = f":{init_count}" if init_count > 1 else ""
+                cell_id = f"module:init{suffix}"
+
+            self.insertions.append((group_start_line, f"# %% [{cell_id}:start]\n"))
+            end_l = (group_end_line or group_start_line) + 1
+            self.insertions.append((end_l, f"# %% [{cell_id}:end]\n"))
+            current_kind = None
+            group_start_line = None
+            group_end_line = None
 
         for stmt in node.body:
-            if isinstance(stmt, SKIP):
-                in_group = False
+            if isinstance(stmt, FUNC_CLASS):
+                _flush_group()
                 continue
 
-            # `if __name__ == "__main__":` always gets its own cell, even if
-            # we're already inside a module:init group.
+            is_import = isinstance(stmt, IMPORT_NODES)
             is_main_guard = (
                 isinstance(stmt, ast.If)
                 and isinstance(stmt.test, ast.Compare)
@@ -354,17 +416,29 @@ class CellAnnotator(ast.NodeVisitor):
                 and stmt.test.left.id == "__name__"
                 and any(isinstance(op, ast.Eq) for op in stmt.test.ops)
             )
+
             if is_main_guard:
-                self.insertions.append((stmt.lineno, "# %% [module:main_guard]\n"))
-                in_group = False  # guard ends the current init group
+                _flush_group()
+                current_kind = "main_guard"
+                group_start_line = stmt.lineno
+                group_end_line = getattr(stmt, "end_lineno", stmt.lineno)
+                _flush_group()
                 continue
 
-            # Everything else: group consecutive runs under module:init[:N]
-            if not in_group:
-                in_group = True
-                init_count += 1
-                suffix = f":{init_count}" if init_count > 1 else ""
-                self.insertions.append((stmt.lineno, f"# %% [module:init{suffix}]\n"))
+            if is_import:
+                if current_kind != "import":
+                    _flush_group()
+                    current_kind = "import"
+                    group_start_line = stmt.lineno
+                group_end_line = getattr(stmt, "end_lineno", stmt.lineno)
+            else:
+                if current_kind != "init":
+                    _flush_group()
+                    current_kind = "init"
+                    group_start_line = stmt.lineno
+                group_end_line = getattr(stmt, "end_lineno", stmt.lineno)
+
+        _flush_group()
 # %% [method:CellAnnotator.visit_Module:end]
 # %% [class:CellAnnotator:end]
 
@@ -610,7 +684,6 @@ def apply_revisions(data: dict, target_dir: Path) -> bool:
         results.append((False, f"{label} FAILED - {message}"))
 
     def _touch(filepath: Path) -> None:
-        # Must run BEFORE the write so header detection sees the old file.
         if filepath.suffix == ".py" and filepath not in touched_py:
             touched_py[filepath] = _detect_header(filepath, target_dir)
 
@@ -625,7 +698,6 @@ def apply_revisions(data: dict, target_dir: Path) -> bool:
         target_file = target_dir / filename
         target_file.parent.mkdir(parents=True, exist_ok=True)
         if target_file.exists():
-            # Back up so rollback restores rather than destroys.
             _ensure_backup(target_file)
         _touch(target_file)
         with open(target_file, "w", encoding="utf-8") as f:
@@ -690,32 +762,30 @@ def apply_revisions(data: dict, target_dir: Path) -> bool:
                 _fail(label, "CELL_PATCH requires `cell_id` matching an existing marker (e.g. `func:name:start`).")
                 continue
 
-            marker = f"# %% [{cell_id}]"
-            is_start_block = ":start]" in marker
-            expected_end_marker = marker.replace(":start]", ":end]") if is_start_block else None
-
-            # Payload validation: the complete cell must be emitted —
-            # start marker first, matching end marker present.
-            content_lines = [l.strip() for l in code.splitlines() if l.strip()]
-            has_start = bool(content_lines) and content_lines[0] == marker
-            has_end = (not is_start_block) or (expected_end_marker in content_lines)
-            if not (has_start and has_end):
-                _fail(label, (
-                    "Ensure you are emitting the complete cell, not just changes or a "
-                    "partial update — `code_content` must begin with the `:start` marker "
-                    "line and include the matching `:end` marker."
-                ))
-                continue
-
             with open(target_file, "r", encoding="utf-8") as f:
                 lines = f.readlines()
 
+            # Resolve marker: support paired :start target or fallback to legacy single marker
+            marker = f"# %% [{cell_id}]"
+            if not marker.endswith(":start]") and not marker.endswith(":end]"):
+                start_marker = f"# %% [{cell_id}:start]"
+            else:
+                start_marker = marker
+
             start_idx = -1
-            end_idx = -1
+            is_paired = False
             for i, line in enumerate(lines):
-                if line.strip() == marker:
+                stripped = line.strip()
+                if stripped == start_marker:
                     start_idx = i
+                    is_paired = ":start]" in start_marker
+                    marker = start_marker
                     break
+                elif stripped == marker:
+                    start_idx = i
+                    is_paired = False
+                    break
+
             if start_idx == -1:
                 _fail(label, (
                     f"marker `{marker}` not found in {filename}. `cell_id` must exactly "
@@ -723,9 +793,23 @@ def apply_revisions(data: dict, target_dir: Path) -> bool:
                 ))
                 continue
 
+            # Fallback for legacy single-marker cells (e.g. # %% [module:init:41]):
+            # Check if dangling top-level imports/code precede this marker without an intervening cell
+            if not is_paired and start_idx > 0:
+                rewind_idx = start_idx - 1
+                while rewind_idx >= 0:
+                    prev = lines[rewind_idx].strip()
+                    if prev.startswith("# %% ["):
+                        break
+                    if prev.startswith("import ") or prev.startswith("from "):
+                        start_idx = rewind_idx
+                    rewind_idx -= 1
+
+            expected_end_marker = marker.replace(":start]", ":end]") if is_paired else None
+            end_idx = -1
             for i in range(start_idx + 1, len(lines)):
                 stripped = lines[i].strip()
-                if is_start_block:
+                if is_paired:
                     if stripped == expected_end_marker:
                         end_idx = i + 1
                         break
@@ -734,13 +818,7 @@ def apply_revisions(data: dict, target_dir: Path) -> bool:
                         end_idx = i
                         break
             if end_idx == -1:
-                if is_start_block:
-                    _fail(label, (
-                        f"`{expected_end_marker}` is missing in {filename}, so the cell "
-                        "boundary is broken. Re-emit the whole file via REPLACE to restore structure."
-                    ))
-                    continue
-                end_idx = len(lines)  # simple (unpaired) cell at EOF
+                end_idx = len(lines)
 
             if not code.endswith("\n"):
                 code += "\n"
@@ -772,8 +850,6 @@ def apply_revisions(data: dict, target_dir: Path) -> bool:
                         "e.g. `func:name:end` or `method:Cls.name:end`."
                     ))
                     continue
-                # If given a `:start` marker, resolve to the matching `:end`
-                # so the new cell lands after the whole block.
                 if ":start]" in anchor:
                     end_anchor = anchor.replace(":start]", ":end]")
                     for i in range(a_idx + 1, len(lines)):
@@ -783,9 +859,8 @@ def apply_revisions(data: dict, target_dir: Path) -> bool:
                 insert_idx = a_idx + 1
                 placement = f"after {append_after}"
             else:
-                # Default: land BEFORE the main guard, not after it.
                 for i, line in enumerate(lines):
-                    if line.strip() == "# %% [module:main_guard]":
+                    if line.strip() in ("# %% [module:main_guard]", "# %% [module:main_guard:start]"):
                         insert_idx = i
                         placement = "before module:main_guard"
                         break
@@ -799,10 +874,6 @@ def apply_revisions(data: dict, target_dir: Path) -> bool:
                 f.writelines(new_lines)
             _ok(label, f"inserted new cell in {filename} ({placement})")
 
-    # Post-pass: normalize every touched .py file. Strip whatever markers /
-    # headers the payload did or didn't include, then re-annotate from the
-    # AST — guaranteeing perfect marker alignment. A file that no longer
-    # parses is reported as a failure (its .bak still holds the pre-patch state).
     for filepath, header in touched_py.items():
         if not filepath.exists():
             continue
@@ -818,7 +889,6 @@ def apply_revisions(data: dict, target_dir: Path) -> bool:
         strip_file(filepath, strip_prompt=True, strip_markers=True)
         annotate_file(filepath, header=header)
 
-    # Ordered report: successes and failures exactly as encountered.
     for _, line in results:
         print(line)
 
