@@ -12,7 +12,7 @@
 # {
 #   "revisions": [
 #     {
-#       "filename": "path/to/this/file.py",
+#       "filename": "path/to/this/file.py",  # Or .yaml
 #       "revision_type": "CELL_PATCH",  # Or "REPLACE", "CELL_CREATE", "FILE_CREATE", "FILE_MOVE"
 #       "cell_id": "func:my_function:start",  # Match an exact marker (e.g. 'imports', 'func:x:start', 'method:Cls.x:start')
 #       "code_content": "# %% [func:my_function:start]\ndef my_function():\n    pass\n# %% [func:my_function:end]\n"
@@ -36,7 +36,7 @@
 #   * REPLACE     : For total rewrites or files under 50 lines. Emit PLAIN
 #                   code only — no cell markers, no schema header. The tool
 #                   re-annotates the file automatically after a successful patch.
-#   * CELL_PATCH  : For surgical updates to a specific function/class/method.
+#   * CELL_PATCH  : For surgical updates to a specific function/class/method/key.
 #                   `cell_id` MUST exist in the current SKELETON of the file.
 #                   `code_content` MUST be the COMPLETE cell — beginning with
 #                   its `:start` marker line and including the matching `:end`
@@ -64,19 +64,20 @@
 # already applied and must not be re-sent.
 # %% [ai_schema:end]
 
-
-# %% [imports]
+# %% [imports:start]
 import argparse
 import ast
 import json
 import logging
+import re
 import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Tuple
+# %% [imports:end]
 
-# %% [module:init]
+# %% [module:init:start]
 try:
     from cellsmith import __version__
 except ImportError:
@@ -111,7 +112,7 @@ FULL_SCHEMA_HEADER = (
     "# {\n"
     "#   \"revisions\": [\n"
     "#     {\n"
-    "#       \"filename\": \"path/to/this/file.py\",\n"
+    "#       \"filename\": \"path/to/this/file.py\",  # Or .yaml\n"
     "#       \"revision_type\": \"CELL_PATCH\",  # Or \"REPLACE\", \"CELL_CREATE\", \"FILE_CREATE\", \"FILE_MOVE\"\n"
     "#       \"cell_id\": \"func:my_function:start\",  # Match an exact marker (e.g. 'imports', 'func:x:start', 'method:Cls.x:start')\n"
     "#       \"code_content\": \"# %% [func:my_function:start]\\ndef my_function():\\n    pass\\n# %% [func:my_function:end]\\n\"\n"
@@ -135,7 +136,7 @@ FULL_SCHEMA_HEADER = (
     "#   * REPLACE     : For total rewrites or files under 50 lines. Emit PLAIN\n"
     "#                   code only — no cell markers, no schema header. The tool\n"
     "#                   re-annotates the file automatically after a successful patch.\n"
-    "#   * CELL_PATCH  : For surgical updates to a specific function/class/method.\n"
+    "#   * CELL_PATCH  : For surgical updates to a specific function/class/method/key.\n"
     "#                   `cell_id` MUST exist in the current SKELETON of the file.\n"
     "#                   `code_content` MUST be the COMPLETE cell — beginning with\n"
     "#                   its `:start` marker line and including the matching `:end`\n"
@@ -185,10 +186,10 @@ POINTER_HEADER = (
 # load it; idempotent — overwritten on every run from this single constant.
 SKILL_DOC_MARKDOWN = r"""# CellSmith patch schema
 
-This project's `.py` files have been annotated by **CellSmith** with cell
-markers. Functions, classes, and methods use *paired* markers —
+This project's `.py` and `.yaml` files have been annotated by **CellSmith** with cell
+markers. Functions, classes, methods, and YAML keys use *paired* markers —
 `# %% [func:name:start]` / `# %% [func:name:end]`, `# %% [class:Foo:start]`,
-`# %% [method:Cls.x:start]`, etc. Simple cells (`# %% [imports]`,
+`# %% [method:Cls.x:start]`, `# %% [top:key:start]`, etc. Simple cells (`# %% [imports]`,
 `# %% [module:init]`, `# %% [module:main_guard]`) have a single marker.
 Each annotated file opens with a short pointer to this document.
 
@@ -246,7 +247,7 @@ cellsmith status
 
 Tool selection (the user pays per token — pick the laconic one):
 - `REPLACE` — total rewrites or files under ~50 lines (plain code, no markers)
-- `CELL_PATCH` — surgical updates to a specific function/class/method
+- `CELL_PATCH` — surgical updates to a specific function/class/method/key
 - `CELL_CREATE` — add new logic to an annotated file (plain code, no markers; place with `append_after`)
 - `FILE_CREATE` — brand new file from scratch (plain code, no markers)
 - `FILE_MOVE` — rename or move a file
@@ -281,7 +282,7 @@ Exit codes: `0` all applied, `2` changelog gate rejected (nothing written),
 **If some revisions fail, re-emit ONLY the FAILED ones.** The OK ones are
 already applied; re-sending them wastes tokens and can double-apply appends.
 After a successful patch the tool automatically strips and re-annotates every
-touched `.py` file, so markers are always in perfect alignment — you never
+touched `.py` and `.yaml` file, so markers are always in perfect alignment — you never
 need to maintain them by hand.
 
 ### `changelog[]` — **BLOCKING GATE**
@@ -319,6 +320,7 @@ cellsmith rollback patch.json .
 *This file is auto-generated by `cellsmith annotate-agent` and regenerated
 on every run. Don't edit by hand.*
 """
+# %% [module:init:end]
 
 
 # %% [class:CellAnnotator:start]
@@ -448,6 +450,10 @@ def annotate_file(filepath: Path, header: str = FULL_SCHEMA_HEADER) -> None:
         logging.error(f"File not found: {filepath}")
         return
 
+    # Enforce pointer header for YAML files regardless of caller argument
+    if filepath.suffix in (".yaml", ".yml"):
+        header = POINTER_HEADER
+
     with open(filepath, "r", encoding="utf-8") as f:
         lines = f.readlines()
 
@@ -466,18 +472,37 @@ def annotate_file(filepath: Path, header: str = FULL_SCHEMA_HEADER) -> None:
             knob_ranges.append((start_line, i + 1))
             in_knob = False
 
-    try:
-        tree = ast.parse(source)
-    except SyntaxError as e:
-        logging.error(f"Syntax error in {filepath}: {e}")
+    valid_insertions = []
+    if filepath.suffix == ".py":
+        try:
+            tree = ast.parse(source)
+        except SyntaxError as e:
+            logging.error(f"Syntax error in {filepath}: {e}")
+            return
+        annotator = CellAnnotator()
+        annotator.visit(tree)
+        raw_insertions = annotator.insertions
+    elif filepath.suffix in (".yaml", ".yml"):
+        raw_insertions = []
+        current_key = None
+        key_re = re.compile(r"^([a-zA-Z0-9_.-]+|'[^']+'|\"[^\"]+\")\s*:")
+        for i, line in enumerate(lines):
+            if line.startswith("#") or not line.strip():
+                continue
+            m = key_re.match(line)
+            if m:
+                new_key = m.group(1).strip("'\"")
+                if current_key:
+                    raw_insertions.append((i + 1, f"# %% [top:{current_key}:end]\n"))
+                current_key = new_key
+                raw_insertions.append((i + 1, f"# %% [top:{current_key}:start]\n"))
+        if current_key:
+            raw_insertions.append((len(lines) + 1, f"# %% [top:{current_key}:end]\n"))
+    else:
         return
 
-    annotator = CellAnnotator()
-    annotator.visit(tree)
-
     # 2. Filter out nodes inside a protected knob block
-    valid_insertions = []
-    for lineno, marker in annotator.insertions:
+    for lineno, marker in raw_insertions:
         inside_knob = any(start <= lineno <= end for start, end in knob_ranges)
         if not inside_knob:
             valid_insertions.append((lineno, marker))
@@ -635,10 +660,14 @@ def _write_changelog(entries: list, target_dir: Path) -> None:
 def _detect_header(filepath: Path, target_dir: Path) -> str:
     """Pick the schema header to use when re-annotating `filepath`.
 
-    Prefer whatever variant the file already carries; for files with no
+    YAML files always receive the laconic POINTER_HEADER.
+    For Python files, prefer whatever variant the file already carries; for files with no
     header (fresh REPLACE / FILE_CREATE payloads), use the pointer header
     if the project has a skill doc at the target root, else the full header.
     """
+    if filepath.suffix in (".yaml", ".yml"):
+        return POINTER_HEADER
+
     try:
         with open(filepath, "r", encoding="utf-8") as f:
             for _ in range(20):
@@ -663,14 +692,14 @@ def apply_revisions(data: dict, target_dir: Path) -> bool:
 
     Prints an ordered, numbered per-operation report (OK / FAILED with a
     corrective instruction) so an agent can re-emit only what failed.
-    After applying, every touched .py file is stripped and re-annotated so
+    After applying, every touched .py or .yaml file is stripped and re-annotated so
     markers stay in perfect alignment regardless of what the payload
     contained. Returns True only if every operation succeeded.
     """
     changelog_entries = _validate_changelog(data.get("changelog"))
     backed_up_files = set()
     results: List[Tuple[bool, str]] = []
-    touched_py: dict = {}  # Path -> header to re-apply
+    touched_files: dict = {}  # Path -> header to re-apply
 
     def _ensure_backup(filepath: Path):
         if filepath not in backed_up_files:
@@ -684,8 +713,8 @@ def apply_revisions(data: dict, target_dir: Path) -> bool:
         results.append((False, f"{label} FAILED - {message}"))
 
     def _touch(filepath: Path) -> None:
-        if filepath.suffix == ".py" and filepath not in touched_py:
-            touched_py[filepath] = _detect_header(filepath, target_dir)
+        if filepath.suffix in (".py", ".yaml", ".yml") and filepath not in touched_files:
+            touched_files[filepath] = _detect_header(filepath, target_dir)
 
     artifacts = data.get("artifacts", [])
     for n, artifact in enumerate(artifacts, 1):
@@ -874,18 +903,33 @@ def apply_revisions(data: dict, target_dir: Path) -> bool:
                 f.writelines(new_lines)
             _ok(label, f"inserted new cell in {filename} ({placement})")
 
-    for filepath, header in touched_py.items():
+    for filepath, header in touched_files.items():
         if not filepath.exists():
             continue
         label = f"Post-check [{filepath.name}]"
-        try:
-            ast.parse(filepath.read_text(encoding="utf-8"))
-        except SyntaxError as e:
-            _fail(label, (
-                f"patched file no longer parses (line {e.lineno}: {e.msg}). Re-emit the "
-                "affected cell completely via CELL_PATCH, or the whole file via REPLACE."
-            ))
-            continue
+        
+        if filepath.suffix == ".py":
+            try:
+                ast.parse(filepath.read_text(encoding="utf-8"))
+            except SyntaxError as e:
+                _fail(label, (
+                    f"patched file no longer parses (line {e.lineno}: {e.msg}). Re-emit the "
+                    "affected cell completely via CELL_PATCH, or the whole file via REPLACE."
+                ))
+                continue
+        elif filepath.suffix in (".yaml", ".yml"):
+            try:
+                import yaml
+                yaml.safe_load(filepath.read_text(encoding="utf-8"))
+            except ImportError:
+                pass  # Skip verification if PyYAML isn't installed in this environment
+            except Exception as e:
+                _fail(label, (
+                    f"patched YAML file no longer parses: {e}. Re-emit the "
+                    "affected cell completely via CELL_PATCH, or the whole file via REPLACE."
+                ))
+                continue
+
         strip_file(filepath, strip_prompt=True, strip_markers=True)
         annotate_file(filepath, header=header)
 
@@ -978,20 +1022,20 @@ def _load_gitignore(root: Path):
 # %% [func:_load_gitignore:end]
 
 
-# %% [func:iter_python_files:start]
-def iter_python_files(
+# %% [func:iter_target_files:start]
+def iter_target_files(
     target: Path,
     *,
     use_gitignore: bool = True,
     include_hidden: bool = False,
 ) -> List[Path]:
-    """Walk `target`, yielding Python files to annotate.
+    """Walk `target`, yielding Python and YAML files to annotate.
 
     Skips dotted dirs/files (.git, .venv, ...) and dunder dirs (__pycache__, ...)
     by default, and honors the nearest .gitignore at `target` if present.
     """
     if target.is_file():
-        return [target] if target.suffix == ".py" else []
+        return [target] if target.suffix in (".py", ".yaml", ".yml") else []
 
     spec = _load_gitignore(target) if use_gitignore else None
     results: List[Path] = []
@@ -1006,14 +1050,14 @@ def iter_python_files(
             continue
         if any(p.startswith("__") and p.endswith("__") for p in parts[:-1]):
             continue
-        if path.suffix != ".py":
+        if path.suffix not in (".py", ".yaml", ".yml"):
             continue
         if spec is not None and spec.match_file(rel.as_posix()):
             continue
 
         results.append(path)
     return sorted(results)
-# %% [func:iter_python_files:end]
+# %% [func:iter_target_files:end]
 
 
 # %% [func:rollback_revisions:start]
@@ -1086,8 +1130,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="AST-based Code Annotator and JSON Patcher")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    annotate_parser = subparsers.add_parser("annotate", help="Annotate Python file(s) with cell markers + full schema header")
-    annotate_parser.add_argument("target", type=Path, help="Target Python file or directory")
+    annotate_parser = subparsers.add_parser("annotate", help="Annotate Python/YAML file(s) with cell markers + full schema header")
+    annotate_parser.add_argument("target", type=Path, help="Target Python/YAML file or directory")
     annotate_parser.add_argument("--no-gitignore", action="store_true", help="Don't filter via .gitignore")
     annotate_parser.add_argument("--include-hidden", action="store_true", help="Include dotted (hidden) dirs/files")
     annotate_parser.add_argument("--dry-run", action="store_true", help="List files that would be annotated, don't write")
@@ -1096,7 +1140,7 @@ def main() -> None:
         "annotate-agent",
         help=f"Like annotate, but uses a laconic pointer header and writes {SKILL_DOC_FILENAME} at the project root",
     )
-    agent_parser.add_argument("target", type=Path, help="Target Python file or directory")
+    agent_parser.add_argument("target", type=Path, help="Target Python/YAML file or directory")
     agent_parser.add_argument("--no-gitignore", action="store_true", help="Don't filter via .gitignore")
     agent_parser.add_argument("--include-hidden", action="store_true", help="Include dotted (hidden) dirs/files")
     agent_parser.add_argument("--dry-run", action="store_true", help="List files that would be annotated, don't write")
@@ -1112,7 +1156,7 @@ def main() -> None:
     patch_parser.add_argument("target_dir", type=Path, default=Path("."), nargs="?", help="Root directory for patching")
 
     strip_parser = subparsers.add_parser("strip", help="Remove cell markers and/or the AI schema prompt header")
-    strip_parser.add_argument("target", type=Path, help="Target Python file or directory")
+    strip_parser.add_argument("target", type=Path, help="Target Python/YAML file or directory")
     strip_parser.add_argument("--prompt-only", action="store_true", help="Only strip the AI schema prompt header")
     strip_parser.add_argument("--markers-only", action="store_true", help="Only strip the # %% cell markers")
     strip_parser.add_argument("--no-gitignore", action="store_true", help="Don't filter via .gitignore (dir mode)")
@@ -1133,13 +1177,13 @@ def main() -> None:
         if not args.target.exists():
             logging.error(f"Target does not exist: {args.target}")
             sys.exit(1)
-        files = iter_python_files(
+        files = iter_target_files(
             args.target,
             use_gitignore=not args.no_gitignore,
             include_hidden=args.include_hidden,
         )
         if not files:
-            logging.warning(f"No Python files found under {args.target}")
+            logging.warning(f"No Python/YAML files found under {args.target}")
             return
         if args.dry_run:
             for f in files:
@@ -1160,13 +1204,13 @@ def main() -> None:
         if not args.target.exists():
             logging.error(f"Target does not exist: {args.target}")
             sys.exit(1)
-        files = iter_python_files(
+        files = iter_target_files(
             args.target,
             use_gitignore=not args.no_gitignore,
             include_hidden=args.include_hidden,
         )
         if not files:
-            logging.warning(f"No Python files found under {args.target}")
+            logging.warning(f"No Python/YAML files found under {args.target}")
             return
         strip_prompt = not args.markers_only
         strip_markers = not args.prompt_only
@@ -1211,6 +1255,7 @@ def main() -> None:
             rollback_revisions(data, args.target_dir)
 # %% [func:main:end]
 
-# %% [module:main_guard]
+# %% [module:main_guard:start]
 if __name__ == "__main__":
     main()
+# %% [module:main_guard:end]
