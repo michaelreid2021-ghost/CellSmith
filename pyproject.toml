@@ -21,7 +21,7 @@ classifiers = [
 ]
 
 [project.scripts]
-cellsmith = "cellsmith.markup:main"
+cellsmith = "cellsmith.cli:main"
 
 [project.urls]
 Repository = "https://github.com/michaelreid2021-ghost/CellSmith"
