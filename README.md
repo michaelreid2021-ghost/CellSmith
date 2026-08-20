@@ -12,6 +12,9 @@ It parses the AST, injects non-destructive Jupyter-style markers, validates patc
 - **Surgical JSON patching** — Supports `CELL_PATCH`, `REPLACE`, `CELL_CREATE`, `FILE_CREATE`, and `FILE_MOVE` in a single payload.
 - **Token-efficient agent mode** — `annotate-agent` replaces full schema headers with short pointers and writes a single shared `CELLSMITH_PATCH_SCHEMA.md` at the project root.
 - **Mandatory changelog gate** — Every patch must contain a validated `changelog` block. Invalid or missing entries are rejected before any disk writes.
+- **Dynamic resolution context** — `cellsmith read` renders a call-graph slice at three fidelities: full code on the execution trace, signature-and-docstring skeletons beyond it, one-line summaries further out. Bounded by a character budget applied at cell boundaries.
+- **Unambiguous targeting** — A `cell_id` must resolve to exactly one marker. Duplicate markers are rejected with exit code `4` before any write. `cellsmith reannotate` regenerates markers from the AST.
+- **Ephemeral focal telemetry** — `patch --trace` wraps the patched cells in a `@focal_trace` decorator that writes one JSON record per call to `.agents/logs/focal_session.jsonl`. `cellsmith finalize` removes it again.
 - **Safety defaults** — Automatic versioned backups, post-patch syntax validation, and atomic rollback.
 ## Installation
  
@@ -206,6 +209,56 @@ cellsmith read read_request.json .
 - Add `post_patch_read` to a patch payload to get the same focused read back
   automatically after a successful patch.
 
+`cellsmith read` exit codes: `0` compiled, `2` invalid request (unknown
+field, wrong type, bad `trace_type`), `5` `entry` matched no cell, or matched
+more than one.
+
+## Focal Telemetry (`--trace`, `finalize`)
+
+Application logs are chronological and mix every subsystem together. After
+patching one function, an agent needs that function's inputs, locals, and
+exceptions, not a filtered stream.
+
+`cellsmith patch --trace` wraps each patched cell in a `@focal_trace`
+decorator and installs a zero-dependency runtime at
+`.agents/cellsmith_telemetry.py`. `.agents/` is added to `.gitignore`.
+
+```bash
+cellsmith patch patch.json . --trace   # patch, then instrument the patched cells
+python -m pytest                       # or run the app
+cat .agents/logs/focal_session.jsonl   # one JSON record per call
+cellsmith finalize .                   # strip all instrumentation
+```
+
+Each record carries the `cell_id`, `args`, `kwargs`, `locals`, `return` or
+`exception`, `raised_at_line`, and `duration_ms`. Values whose name contains
+`password`, `secret`, `token`, `api_key`, or `authorization` are written as
+`<redacted>`. Long values are truncated.
+
+Instrumentation is opt-in. It is applied by `--trace`, or by setting
+`"telemetry": true` on the patch payload. Without either, `patch` never
+modifies a function's decorators.
+
+Other commands:
+
+```bash
+# Install the runtime without patching; optionally instrument a file
+cellsmith telemetry . --instrument app.py
+cellsmith telemetry . --instrument app.py --cells func:process method:Cls.run
+```
+
+Notes:
+
+- The decorator is written above the cell's `:start` marker, so it sits
+  outside the cell. A later `CELL_PATCH` replaces `:start` through `:end` and
+  leaves the instrumentation in place; the agent keeps emitting pure logic.
+- Local capture installs one shared trace function. It is skipped when a
+  debugger, profiler, or coverage tool already holds the trace slot, in which
+  case `locals` is empty and everything else is still recorded.
+- Nested functions are never wrapped. They belong to their parent's cell.
+- `cellsmith finalize` must be run before committing. It removes every
+  `@focal_trace` decorator and the import preamble.
+
 ## Project Layout
  
 ```text
@@ -216,6 +269,7 @@ src/cellsmith/
 ├── patcher.py        # changelog gate, apply_revisions(), rollback_revisions()
 ├── files.py          # backups, strip_file(), target discovery, .gitignore
 ├── constants.py      # shared constants + template loader
+├── telemetry.py      # @focal_trace injection, stripping, finalize
 ├── reader/           # CellRead subsystem
 │   ├── graph.py      # CellGraph: cells + statically resolved call edges
 │   ├── compiler.py   # mixed-fidelity renderer (full / skeleton / laconic)

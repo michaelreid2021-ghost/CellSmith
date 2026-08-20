@@ -217,6 +217,43 @@ after a fully successful patch, printing it to stdout:
 It takes the same fields as `read_request`, and is validated up front — a
 malformed one rejects the payload before anything is written.
 
+## Telemetry — inspecting what your patch actually did
+
+To see the runtime behaviour of the cells you just patched, set `"telemetry":
+true` on the payload (or have the user run `cellsmith patch patch.json .
+--trace`). CellSmith wraps each patched cell in a `@focal_trace` decorator and
+installs a zero-dependency runtime under `.agents/`.
+
+Run the app or the test suite, then read `.agents/logs/focal_session.jsonl`.
+One JSON record per call:
+
+```json
+{
+  "cell_id": "method:Service.handle",
+  "outcome": "raised",
+  "args": ["<Service object>", {"a": 3}],
+  "kwargs": {"password": "<redacted>"},
+  "locals": {"total": 10, "divisor": 0},
+  "raised_at_line": 28,
+  "exception": {"type": "ZeroDivisionError", "message": "division by zero"},
+  "duration_ms": 0.41
+}
+```
+
+This is a focused stream — only the cells you instrumented appear in it, so
+there is nothing to filter out. Values named like credentials are redacted.
+
+Instrumentation is ephemeral and **must not be committed**. When the task is
+done:
+
+```bash
+cellsmith finalize .
+```
+
+That strips every `@focal_trace` decorator and the import preamble. The
+decorator lives above the cell's `:start` marker, so it survives your later
+patches — keep emitting pure logic and do not write decorators yourself.
+
 ## Step 3 — hand off the JSON
 
 Save the JSON as `patch.json` (or any name) and let the user (or your shell

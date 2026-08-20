@@ -23,6 +23,13 @@ from cellsmith.annotator import annotate_file
 from cellsmith.constants import FULL_SCHEMA_HEADER, POINTER_HEADER, SKILL_DOC_FILENAME
 from cellsmith.files import iter_target_files, strip_file
 from cellsmith.reader import build_graph
+from cellsmith.telemetry import (
+    AGENTS_DIR,
+    ensure_runtime,
+    finalize_tree,
+    instrument_file,
+    log_path,
+)
 from cellsmith.reader.graph import TRACE_LEVELS
 from cellsmith.reader.compiler import compile_read
 from cellsmith.reader.schema import (
@@ -103,11 +110,37 @@ def main() -> None:
     read_parser.add_argument("--no-gitignore", action="store_true", help="Don't filter via .gitignore")
     read_parser.add_argument("--include-hidden", action="store_true", help="Include dotted (hidden) dirs/files")
 
+    telemetry_parser = subparsers.add_parser(
+        "telemetry",
+        help=f"Install the ephemeral telemetry runtime under {AGENTS_DIR}/",
+    )
+    telemetry_parser.add_argument("target", type=Path, default=Path("."), nargs="?", help="Project root")
+    telemetry_parser.add_argument(
+        "--instrument", type=Path, default=None,
+        help="Also wrap every top-level function/method in this file",
+    )
+    telemetry_parser.add_argument(
+        "--cells", nargs="*", default=None,
+        help="With --instrument, wrap only these cell ids",
+    )
+
+    finalize_parser = subparsers.add_parser(
+        "finalize",
+        help="Strip all @focal_trace decorators and telemetry imports",
+    )
+    finalize_parser.add_argument("target", type=Path, help="Target Python file or directory")
+    finalize_parser.add_argument("--no-gitignore", action="store_true", help="Don't filter via .gitignore")
+    finalize_parser.add_argument("--include-hidden", action="store_true", help="Include dotted (hidden) dirs/files")
+
     subparsers.add_parser("status", help="Report whether cellsmith is installed and runnable (for agent probes)")
 
     patch_parser = subparsers.add_parser("patch", help="Apply JSON response patch to target directory")
     patch_parser.add_argument("json_file", type=Path, help="JSON response file")
     patch_parser.add_argument("target_dir", type=Path, default=Path("."), nargs="?", help="Root directory for patching")
+    patch_parser.add_argument(
+        "--trace", action="store_true",
+        help="Wrap the patched cells in ephemeral @focal_trace telemetry",
+    )
 
     strip_parser = subparsers.add_parser("strip", help="Remove cell markers and/or the AI schema prompt header")
     strip_parser.add_argument("target", type=Path, help="Target Python/YAML file or directory")
@@ -154,6 +187,26 @@ def main() -> None:
             written = write_skill_doc(skill_root)
             logging.info(f"Wrote skill doc to {written}")
         logging.info(f"Processed {len(files)} file(s)")
+    elif args.command == "telemetry":
+        if not args.target.exists():
+            logging.error(f"Target does not exist: {args.target}")
+            sys.exit(1)
+        written = ensure_runtime(args.target)
+        logging.info(f"Telemetry runtime installed at {written}")
+        logging.info(f"Traces will be written to {log_path(args.target)}")
+        if args.instrument is not None:
+            wrapped = instrument_file(args.instrument, args.cells)
+            logging.info(f"Instrumented {wrapped} cell(s) in {args.instrument}")
+    elif args.command == "finalize":
+        if not args.target.exists():
+            logging.error(f"Target does not exist: {args.target}")
+            sys.exit(1)
+        files, lines = finalize_tree(
+            args.target,
+            use_gitignore=not args.no_gitignore,
+            include_hidden=args.include_hidden,
+        )
+        logging.info(f"Removed {lines} telemetry line(s) from {files} file(s)")
     elif args.command == "read":
         # Both positionals are optional, so `read --entry X .` parks the target
         # directory in the request-file slot. Shift it back.
@@ -246,7 +299,7 @@ def main() -> None:
 
         if args.command == "patch":
             try:
-                all_ok = apply_revisions(data, args.target_dir)
+                all_ok = apply_revisions(data, args.target_dir, trace=args.trace)
             except AmbiguousMarkerError as e:
                 print(e.report)
                 sys.exit(4)

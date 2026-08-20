@@ -35,6 +35,7 @@ from cellsmith.constants import (
 )
 from cellsmith.files import create_backup, strip_lines
 from cellsmith.reader.schema import ReadRequest
+from cellsmith.telemetry import ensure_runtime, instrument_file
 # %% [imports:end]
 
 
@@ -226,6 +227,30 @@ def _check_ambiguity(data: dict, target_dir: Path) -> None:
 
 
 
+
+# %% [func:_instrument_patched:start]
+def _instrument_patched(touched_files: dict, patched_cells: dict, target_dir: Path,
+                        results: list) -> None:
+    """Wrap the cells this payload patched in `@focal_trace`.
+
+    Runs after re-annotation so the decorator lands above an accurate
+    `:start` marker. Files that were replaced wholesale carry no recorded
+    cell ids, so every top-level definition in them is instrumented.
+    """
+    python_files = [f for f in touched_files if f.suffix == ".py" and f.exists()]
+    if not python_files:
+        return
+    ensure_runtime(target_dir)
+    for filepath in python_files:
+        cells = patched_cells.get(filepath)
+        wrapped = instrument_file(filepath, cells if cells else None)
+        if wrapped:
+            results.append(
+                (True, f"Telemetry [{filepath.name}] OK - instrumented {wrapped} cell(s)")
+            )
+# %% [func:_instrument_patched:end]
+
+
 # %% [func:_run_post_patch_read:start]
 def _run_post_patch_read(request: "ReadRequest", target_dir: Path) -> None:
     """Print a verification read of the patched code to stdout.
@@ -346,7 +371,7 @@ def _detect_header(filepath: Path, target_dir: Path) -> str:
 # %% [func:_detect_header:end]
 
 # %% [func:apply_revisions:start]
-def apply_revisions(data: dict, target_dir: Path) -> bool:
+def apply_revisions(data: dict, target_dir: Path, *, trace: bool = False) -> bool:
     """Apply a patch payload.
 
     Prints an ordered, numbered per-operation report (OK / FAILED with a
@@ -361,9 +386,13 @@ def apply_revisions(data: dict, target_dir: Path) -> bool:
     # only after the patch has already been written.
     post_read = data.get("post_patch_read")
     read_request = ReadRequest.from_dict(post_read) if post_read else None
+    # Instrumentation is opt-in: the CLI flag, or an explicit key on the
+    # payload. Rewriting a caller's functions is never done by default.
+    telemetry = bool(data.get("telemetry", False)) or trace
     backed_up_files = set()
     results: List[Tuple[bool, str]] = []
     touched_files: dict = {}  # Path -> header to re-apply
+    patched_cells: dict = {}  # Path -> {cell_id} touched by this payload
 
     def _ensure_backup(filepath: Path):
         if filepath not in backed_up_files:
@@ -379,6 +408,9 @@ def apply_revisions(data: dict, target_dir: Path) -> bool:
     def _touch(filepath: Path) -> None:
         if filepath.suffix in (".py", ".yaml", ".yml") and filepath not in touched_files:
             touched_files[filepath] = _detect_header(filepath, target_dir)
+
+    def _note_cell(filepath: Path, cell_id: str) -> None:
+        patched_cells.setdefault(filepath, set()).add(cell_id)
 
     artifacts = data.get("artifacts", [])
     for n, artifact in enumerate(artifacts, 1):
@@ -520,6 +552,7 @@ def apply_revisions(data: dict, target_dir: Path) -> bool:
             _touch(target_file)
             with open(target_file, "w", encoding="utf-8") as f:
                 f.writelines(new_lines)
+            _note_cell(target_file, cell_id)
             _ok(label, f"patched {cell_id} in {filename}")
 
         elif rev_type == "CELL_CREATE":
@@ -595,6 +628,9 @@ def apply_revisions(data: dict, target_dir: Path) -> bool:
                 continue
 
         reannotate_file(filepath, target_dir, header=header)
+
+    if telemetry:
+        _instrument_patched(touched_files, patched_cells, target_dir, results)
 
     for _, line in results:
         print(line)
