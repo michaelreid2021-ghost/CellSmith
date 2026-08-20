@@ -60,13 +60,14 @@ cellsmith status
 | `append_after` | optional, CELL_CREATE | An existing cell_id (e.g. `func:top:end`, `method:Cls.run:end`); the new code is inserted immediately after that cell. A `:start` id resolves to its matching `:end`. Omitted: inserts before `module:main_guard`, or at EOF if there is none |
 
 Tool selection (the user pays per token — pick the laconic one):
-- `REPLACE` — total rewrites or files under ~50 lines (plain code, no markers)
+- `REPLACE` — When Applicable for total rewrites or files under ~300 lines 
 - `CELL_PATCH` — surgical updates to a specific function/class/method/key
 - `CELL_CREATE` — add new logic to an annotated file (plain code, no markers; place with `append_after`)
 - `FILE_CREATE` — brand new file from scratch (plain code, no markers)
 - `FILE_MOVE` — rename or move a file
 - `FILE_DELETE` — delete a file. Use it whenever you mean "remove this
   file"; do not empty a file out instead.
+- `REPLACE` — When Applicable for total rewrites or files under ~300 lines
 - `ARCHIVE` — the same mechanism, when you mean "retire this, I may want
   it back" rather than "delete this".
 
