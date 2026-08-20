@@ -1,0 +1,8 @@
+# %% [ai_schema:pointer]
+# CellSmith-annotated file. Cells marked with `# %% [<cell_id>]`.
+# To modify safely: load `__SKILL_DOC_FILENAME__` at the project root
+# for the full JSON patch schema (incl. required `changelog` block).
+# Run `cellsmith status` first — if it errors, ignore these markers and
+# edit the file directly per the user's request.
+# %% [ai_schema:end]
+

@@ -61,6 +61,14 @@ cellsmith status
 # → available cellsmith <version>
 ```
  
+### Re-annotate (regenerate markers)
+
+```bash
+# Strip and re-mark from the AST, preserving each file's header variant.
+# Fixes drifted or duplicated markers after a hand edit.
+cellsmith reannotate src/
+```
+
 ### Strip annotations
  
 ```bash
@@ -139,7 +147,12 @@ Replace [3] OK - replaced utils.py
   intact so nothing is lost.
 - Exit codes reflect the outcome: `0` everything applied, `2` the changelog
   gate rejected the payload (nothing was written at all), `3` partial —
-  some operations succeeded and some failed.
+  some operations succeeded and some failed, `4` ambiguous destination
+  (nothing was written at all).
+- A `cell_id` must resolve to exactly one marker. If a file carries the same
+  marker twice, the patch is refused in full rather than guessing — the
+  report names the duplicated lines and shows what each block's `cell_id`
+  becomes after `cellsmith reannotate`.
 ## Agentic Workflows
  
 `cellsmith annotate-agent` is intended for multi-file agent sessions:
@@ -153,6 +166,21 @@ Replace [3] OK - replaced utils.py
 - Post-patch AST syntax validation is performed. Failures leave the backup intact and report the error.
 - After a successful patch, Python files are stripped and re-annotated from the AST so markers stay aligned.
 - `cellsmith rollback` restores files, removes newly created artifacts, and reverses moves.
+## Project Layout
+ 
+```text
+src/cellsmith/
+├── __init__.py       # version + public API
+├── cli.py            # argparse setup and command routing
+├── annotator.py      # AST/YAML traversal: CellAnnotator, annotate_file()
+├── patcher.py        # changelog gate, apply_revisions(), rollback_revisions()
+├── files.py          # backups, strip_file(), target discovery, .gitignore
+├── constants.py      # shared constants + template loader
+└── templates/        # static assets (schema headers, skill doc)
+```
+ 
+`cellsmith.markup` remains as a deprecated shim re-exporting the public names.
+ 
 ## License
  
 MIT

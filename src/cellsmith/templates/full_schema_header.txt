@@ -1,0 +1,65 @@
+# %% [ai_schema:instructions]
+# AI INSTRUCTIONS - PATCH SCHEMA:
+#
+# To modify this file, return a JSON response with the following structure.
+# When using CELL_PATCH, `cell_id` MUST be an exact marker that exists in the file.
+# Functions/classes/methods use paired markers: `func:name:start` / `func:name:end`
+# (likewise `class:X:start` and `method:Cls.x:start`). Patch the `:start` cell;
+# everything through the matching `:end` marker is replaced. Simple cells like
+# `imports` and `module:init` have a single marker with no suffix.
+#
+# {
+#   "revisions": [
+#     {
+#       "filename": "path/to/this/file.py",  # Or .yaml
+#       "revision_type": "CELL_PATCH",  # Or "REPLACE", "CELL_CREATE", "FILE_CREATE", "FILE_MOVE"
+#       "cell_id": "func:my_function:start",  # Match an exact marker (e.g. 'imports', 'func:x:start', 'method:Cls.x:start')
+#       "code_content": "# %% [func:my_function:start]\ndef my_function():\n    pass\n# %% [func:my_function:end]\n"
+#     }
+#   ],
+#   "changelog": [
+#     {
+#       "change_type": "bug_fix",   # Required. One of: new_feature, correcting_implementation, bug_fix, refactor, schema_migration
+#       "summary": "Concise single-sentence description of the final state achieved.",
+#       "details": ["Optional bullet of granular technical change."]
+#     }
+#   ]
+# }
+#
+# BLOCKING GATE: every patch response MUST include at least one `changelog`
+# entry. Classify your work strictly using the `change_type` enum. Write the
+# `summary` as affirmative documentation of the final state — not a recount
+# of past conversational errors.
+#
+# Choose the most efficient tool for the job (the user pays per token):
+#   * REPLACE     : For total rewrites or files under 50 lines. Emit PLAIN
+#                   code only — no cell markers, no schema header. The tool
+#                   re-annotates the file automatically after a successful patch.
+#   * CELL_PATCH  : For surgical updates to a specific function/class/method/key.
+#                   `cell_id` MUST exist in the current SKELETON of the file.
+#                   `code_content` MUST be the COMPLETE cell — beginning with
+#                   its `:start` marker line and including the matching `:end`
+#                   marker — never a partial diff.
+#   * CELL_CREATE : To add new logic to an existing file. Plain code, no
+#                   markers. Optional `append_after`: an existing cell_id
+#                   (e.g. "func:top:end", "method:Cls.run:end") — the new
+#                   code is inserted right after that cell. Omitted: inserts
+#                   before `module:main_guard` (or EOF if none). To add a
+#                   METHOD, use append_after with a method of that class and
+#                   emit the code already indented for the class body.
+#   * FILE_CREATE : To create a brand new file. Plain code only — annotation
+#                   is handled by the tool, same as REPLACE.
+#   * FILE_MOVE   : To move/rename a file (requires 'new_filename' field).
+#
+# Nested (inner) functions have NO markers and are never patchable on their
+# own — they are part of their parent's cell. CELL_PATCH the parent.
+# Prefer nested functions only as a LAST RESORT (true closures). If you
+# encounter one that could be a module-level function or private method,
+# propose extracting it to the user ONCE — it makes the code directly
+# patchable. If the user declines, respect that and do not raise it again.
+#
+# `cellsmith patch` prints a numbered per-revision report (OK / FAILED).
+# If some revisions fail, re-emit ONLY the FAILED ones — the OK ones are
+# already applied and must not be re-sent.
+# %% [ai_schema:end]
+
