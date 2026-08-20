@@ -17,7 +17,7 @@ import shutil
 from pathlib import Path
 from typing import List, Optional
 
-from cellsmith.workspace import backup_path, backups_dir
+from cellsmith.workspace import backup_path, support_root
 # %% [imports:end]
 
 
@@ -165,7 +165,7 @@ def iter_target_files(
         return [target] if target.suffix in (".py", ".yaml", ".yml") else []
 
     spec = _load_gitignore(target) if use_gitignore else None
-    backups_root = backups_dir(target).resolve()
+    support = support_root(target).resolve()
     results: List[Path] = []
 
     for path in target.rglob("*"):
@@ -178,8 +178,10 @@ def iter_target_files(
             continue
         if any(p.startswith("__") and p.endswith("__") for p in parts[:-1]):
             continue
-        # Backups now live inside the project; never annotate them.
-        if backups_root in path.resolve().parents:
+        # CellSmith's own support tree lives inside the project. Its
+        # backups and archived files are copies of real sources, so they must
+        # never be walked as if they were part of the project.
+        if support in path.resolve().parents:
             continue
         if path.suffix not in (".py", ".yaml", ".yml"):
             continue

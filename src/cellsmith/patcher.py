@@ -37,10 +37,11 @@ from cellsmith.files import create_backup, strip_lines
 from cellsmith.reader.schema import ReadRequest
 from cellsmith.telemetry import ensure_runtime, instrument_file
 from cellsmith.workspace import (
-    archive_path,
     backup_path,
     ensure_support_dirs,
     legacy_backup_path,
+    restore_from_archive,
+    store_in_archive,
     store_patch_file,
 )
 # %% [imports:end]
@@ -449,6 +450,7 @@ def apply_revisions(
         "CELL_CREATE": "Cell Create",
         "FILE_MOVE": "File Move",
         "ARCHIVE": "Archive",
+        "FILE_DELETE": "File Delete",
     }
 
     revisions = data.get("revisions", [])
@@ -466,21 +468,19 @@ def apply_revisions(
             continue
         target_file = target_dir / filename
 
-        if rev_type == "ARCHIVE":
+        if rev_type in ("ARCHIVE", "FILE_DELETE"):
+            # Both land in the archive. FILE_DELETE exists so an agent can use
+            # the verb it means; the file leaves the working tree either way,
+            # and git will report it deleted at the next commit. Keeping the
+            # content lets a delete be undone between commits, which git
+            # alone cannot do without discarding everything since the last one.
+            verb = "archived" if rev_type == "ARCHIVE" else "deleted"
             if not target_file.exists():
-                _fail(label, f"cannot archive {filename}: file does not exist.")
-                continue
-            destination = archive_path(target_file, target_dir)
-            if destination.exists():
-                _fail(label, (
-                    f"{filename} is already archived at {destination}. "
-                    "Remove or rename the archived copy first."
-                ))
+                _fail(label, f"cannot {verb[:-1]} {filename}: file does not exist.")
                 continue
             ensure_support_dirs(target_dir)
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(target_file), str(destination))
-            _ok(label, f"archived {filename}")
+            destination = store_in_archive(target_file, target_dir)
+            _ok(label, f"{verb} {filename} (recoverable at {destination})")
             continue
 
         if rev_type == "FILE_MOVE":
@@ -688,13 +688,10 @@ def rollback_revisions(data: dict, target_dir: Path) -> None:
     """Reverts changes applied by a JSON patch."""
     revisions = data.get("revisions", [])
     for rev in revisions:
-        if rev.get("revision_type") == "ARCHIVE":
+        if rev.get("revision_type") in ("ARCHIVE", "FILE_DELETE"):
             original = target_dir / rev["filename"]
-            archived = archive_path(original, target_dir)
-            if archived.exists():
-                original.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(archived), str(original))
-                logging.info(f"Reverted ARCHIVE: {archived} -> {original}")
+            if restore_from_archive(original, target_dir):
+                logging.info(f"Restored from archive (rollback): {original}")
             continue
 
         if rev.get("revision_type") == "FILE_MOVE":
@@ -750,7 +747,7 @@ def rollback_revisions(data: dict, target_dir: Path) -> None:
 
     for rev in revisions:
         rev_type = rev.get("revision_type")
-        if rev_type in ("FILE_MOVE", "ARCHIVE"):
+        if rev_type in ("FILE_MOVE", "ARCHIVE", "FILE_DELETE"):
             continue
 
         target_file = target_dir / rev["filename"]
