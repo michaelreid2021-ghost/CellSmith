@@ -1,0 +1,178 @@
+"""Ephemeral focal telemetry for CellSmith agent sessions.
+
+Dropped here by `cellsmith telemetry init`. Zero dependencies, standard
+library only. Not intended to be committed — `cellsmith finalize` removes the
+decorators that reference it, and `.agents/` is added to `.gitignore`.
+
+Each traced call appends one JSON object to `.agents/logs/focal_session.jsonl`
+containing the cell id, arguments, return value or exception, captured local
+variables, and wall-clock duration.
+"""
+
+import functools
+import json
+import os
+import sys
+import time
+import traceback
+from datetime import datetime, timezone
+
+LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+LOG_FILE = os.path.join(LOG_DIR, "focal_session.jsonl")
+
+# Capturing locals installs a per-call trace function. It is skipped when
+# another tracer (debugger, coverage, profiler) already holds the slot.
+CAPTURE_LOCALS = True
+
+# Longest repr kept for any single value, to keep the stream readable.
+MAX_VALUE_CHARS = 500
+
+# Names never recorded, matched case-insensitively as substrings.
+REDACT = ("password", "passwd", "secret", "token", "api_key", "apikey", "authorization")
+
+
+def _redacted(name):
+    lowered = str(name).lower()
+    return any(marker in lowered for marker in REDACT)
+
+
+def _safe(value):
+    """JSON-safe rendering of an arbitrary value."""
+    if isinstance(value, (str, int, float, bool, type(None))):
+        if isinstance(value, str) and len(value) > MAX_VALUE_CHARS:
+            return value[:MAX_VALUE_CHARS] + f"...<+{len(value) - MAX_VALUE_CHARS} chars>"
+        return value
+    if isinstance(value, (list, tuple, set)):
+        return [_safe(v) for v in list(value)[:20]]
+    if isinstance(value, dict):
+        return {str(k): ("<redacted>" if _redacted(k) else _safe(v))
+                for k, v in list(value.items())[:20]}
+    try:
+        text = repr(value)
+    except Exception:
+        return f"<unreprable {type(value).__name__}>"
+    if len(text) > MAX_VALUE_CHARS:
+        text = text[:MAX_VALUE_CHARS] + f"...<+{len(text) - MAX_VALUE_CHARS} chars>"
+    return text
+
+
+def _emit(record):
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        with open(LOG_FILE, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, default=str) + "\n")
+    except OSError:
+        # Telemetry must never take down the program it is observing.
+        pass
+
+
+# Code objects currently being traced, each mapping to a stack of capture
+# dicts (a stack, so recursion works). One dispatcher serves every traced
+# function: installing a fresh tracer per call would mean an outer traced
+# function suppresses local capture in every traced function it calls.
+_CAPTURES = {}
+
+
+def _return_tracer(frame, event, arg):
+    if event == "return":
+        stack = _CAPTURES.get(frame.f_code)
+        if stack:
+            stack[-1].update(frame.f_locals)
+    return _return_tracer
+
+
+def _dispatch(frame, event, arg):
+    if event == "call" and frame.f_code in _CAPTURES:
+        return _return_tracer
+    return None
+
+
+# Lets a nested wrapper recognize our own tracer and leave it in place.
+_dispatch._cellsmith = True
+
+
+def focal_trace(cell_id="", capture_locals=None):
+    """Record one JSON line per call of the wrapped function."""
+    want_locals = CAPTURE_LOCALS if capture_locals is None else capture_locals
+
+    def decorate(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            captured = {}
+            # Register for local capture unless a foreign tracer (debugger,
+            # coverage, profiler) holds the slot — stepping on one of those
+            # is not worth it. Our own dispatcher is not foreign.
+            previous = sys.gettrace()
+            installed = want_locals and (
+                previous is None or getattr(previous, "_cellsmith", False)
+            )
+            if installed:
+                _CAPTURES.setdefault(func.__code__, []).append(captured)
+                if previous is None:
+                    sys.settrace(_dispatch)
+
+            def _release():
+                if not installed:
+                    return
+                stack = _CAPTURES.get(func.__code__)
+                if stack:
+                    stack.pop()
+                    if not stack:
+                        _CAPTURES.pop(func.__code__, None)
+                if previous is None:
+                    sys.settrace(None)
+
+            started = time.perf_counter()
+            record = {
+                "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "cell_id": cell_id or getattr(func, "__qualname__", ""),
+                "function": getattr(func, "__qualname__", ""),
+                "module": getattr(func, "__module__", ""),
+                "args": [_safe(a) for a in args],
+                "kwargs": {k: ("<redacted>" if _redacted(k) else _safe(v))
+                           for k, v in kwargs.items()},
+            }
+
+            try:
+                result = func(*args, **kwargs)
+            except BaseException as exc:
+                _release()
+                # Prefer the wrapped function's own frame; fall back to the
+                # innermost one when the exception came from deeper down.
+                tb = exc.__traceback__
+                own = None
+                innermost = None
+                while tb is not None:
+                    innermost = tb
+                    if tb.tb_frame.f_code is func.__code__:
+                        own = tb
+                    tb = tb.tb_next
+                frame_tb = own or innermost
+                if frame_tb is not None:
+                    captured.update(frame_tb.tb_frame.f_locals)
+                    record["raised_at_line"] = frame_tb.tb_lineno
+                record["outcome"] = "raised"
+                record["exception"] = {
+                    "type": type(exc).__name__,
+                    "message": str(exc)[:MAX_VALUE_CHARS],
+                    "traceback": traceback.format_exc()[-2000:],
+                }
+                record["locals"] = {k: ("<redacted>" if _redacted(k) else _safe(v))
+                                    for k, v in captured.items()}
+                record["duration_ms"] = round((time.perf_counter() - started) * 1000, 3)
+                _emit(record)
+                raise
+            else:
+                _release()
+                record["outcome"] = "returned"
+                record["return"] = _safe(result)
+                record["locals"] = {k: ("<redacted>" if _redacted(k) else _safe(v))
+                                    for k, v in captured.items()}
+                record["duration_ms"] = round((time.perf_counter() - started) * 1000, 3)
+                _emit(record)
+                return result
+
+        wrapper.__cellsmith_traced__ = True
+        return wrapper
+
+    return decorate
