@@ -34,6 +34,7 @@ from cellsmith.constants import (
     VALID_CHANGE_TYPES,
 )
 from cellsmith.files import create_backup, strip_lines
+from cellsmith.reader.schema import ReadRequest
 # %% [imports:end]
 
 
@@ -224,6 +225,27 @@ def _check_ambiguity(data: dict, target_dir: Path) -> None:
 # %% [func:_check_ambiguity:end]
 
 
+
+# %% [func:_run_post_patch_read:start]
+def _run_post_patch_read(request: "ReadRequest", target_dir: Path) -> None:
+    """Print a verification read of the patched code to stdout.
+
+    Saves the agent a turn: rather than re-reading the file it just changed —
+    and pulling the whole thing back into context — it gets the same focused
+    slice it would have asked for, already scoped to the patch.
+    """
+    from cellsmith.reader import build_graph
+    from cellsmith.reader.compiler import compile_read
+
+    try:
+        graph = build_graph(target_dir)
+        print("\n# ===== POST-PATCH READ =====")
+        print(compile_read(graph, request))
+    except KeyError as e:
+        logging.warning(f"post_patch_read skipped: {e}")
+# %% [func:_run_post_patch_read:end]
+
+
 # %% [func:reannotate_file:start]
 def reannotate_file(filepath: Path, target_dir: Path, header: str = None) -> None:
     """Regenerate `filepath`'s markers, preserving its schema header variant.
@@ -335,6 +357,10 @@ def apply_revisions(data: dict, target_dir: Path) -> bool:
     """
     changelog_entries = _validate_changelog(data.get("changelog"))
     _check_ambiguity(data, target_dir)
+    # Validate the follow-up read now, so a malformed one cannot surface
+    # only after the patch has already been written.
+    post_read = data.get("post_patch_read")
+    read_request = ReadRequest.from_dict(post_read) if post_read else None
     backed_up_files = set()
     results: List[Tuple[bool, str]] = []
     touched_files: dict = {}  # Path -> header to re-apply
@@ -579,6 +605,9 @@ def apply_revisions(data: dict, target_dir: Path) -> bool:
         _write_changelog(changelog_entries, target_dir)
     else:
         logging.warning("No operations applied; changelog not recorded.")
+
+    if all_ok and read_request is not None:
+        _run_post_patch_read(read_request, target_dir)
     return all_ok
 # %% [func:apply_revisions:end]
 

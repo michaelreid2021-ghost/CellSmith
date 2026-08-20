@@ -166,6 +166,46 @@ Replace [3] OK - replaced utils.py
 - Post-patch AST syntax validation is performed. Failures leave the backup intact and report the error.
 - After a successful patch, Python files are stripped and re-annotated from the AST so markers stay aligned.
 - `cellsmith rollback` restores files, removes newly created artifacts, and reverses moves.
+## Dynamic Resolution Context (`cellsmith read`)
+
+Agents burn context reading whole files. `cellsmith read` compiles a focused
+slice of the call graph instead: full code along the execution trace, AST
+skeletons beyond it, one-line summaries in the far background.
+
+```bash
+# Flags
+cellsmith read --entry app.py:func:process --trace-depth 2 --ast 1 .
+
+# Or a JSON request, which is what agents should emit
+cellsmith read read_request.json .
+```
+
+```json
+{
+  "read_request": {
+    "entry": "app.py:func:process:start",
+    "trace_depth": 2,
+    "trace_type": "branching",
+    "ast_layers": 1,
+    "laconic_background_layers": 1,
+    "max_characters": 50000,
+    "trace_exclude_paths": ["func:noisy_helper"],
+    "trace_keep": ["func:critical"]
+  }
+}
+```
+
+- `trace_type` controls how wide a call site may be to be followed:
+  `linear` (straight-line only), `branching` (adds `if`/`try`), `loops`
+  (adds `for`/`while`), or `all`.
+- Docstrings are stripped from full-fidelity cells and kept on skeletons —
+  the summary layer lives in the code, not in a sidecar index.
+- The budget is evaluated only at cell boundaries, with a 500-character
+  grace buffer, so a function is never cut in half. Cells that don't fit are
+  replaced by a `[TRACE_TRUNCATED]` breadcrumb.
+- Add `post_patch_read` to a patch payload to get the same focused read back
+  automatically after a successful patch.
+
 ## Project Layout
  
 ```text
@@ -176,6 +216,11 @@ src/cellsmith/
 ├── patcher.py        # changelog gate, apply_revisions(), rollback_revisions()
 ├── files.py          # backups, strip_file(), target discovery, .gitignore
 ├── constants.py      # shared constants + template loader
+├── reader/           # CellRead subsystem
+│   ├── graph.py      # CellGraph: cells + statically resolved call edges
+│   ├── compiler.py   # mixed-fidelity renderer (full / skeleton / laconic)
+│   ├── budget.py     # character budget with grace buffer
+│   └── schema.py     # ReadRequest validation
 └── templates/        # static assets (schema headers, skill doc)
 ```
  

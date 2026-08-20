@@ -22,6 +22,14 @@ from cellsmith import __version__
 from cellsmith.annotator import annotate_file
 from cellsmith.constants import FULL_SCHEMA_HEADER, POINTER_HEADER, SKILL_DOC_FILENAME
 from cellsmith.files import iter_target_files, strip_file
+from cellsmith.reader import build_graph
+from cellsmith.reader.graph import TRACE_LEVELS
+from cellsmith.reader.compiler import compile_read
+from cellsmith.reader.schema import (
+    DEFAULT_MAX_CHARACTERS,
+    ReadRequest,
+    request_from_args,
+)
 from cellsmith.patcher import (
     AmbiguousMarkerError,
     apply_revisions,
@@ -67,6 +75,33 @@ def main() -> None:
     reannotate_parser.add_argument("target", type=Path, help="Target Python/YAML file or directory")
     reannotate_parser.add_argument("--no-gitignore", action="store_true", help="Don't filter via .gitignore")
     reannotate_parser.add_argument("--include-hidden", action="store_true", help="Include dotted (hidden) dirs/files")
+
+    read_parser = subparsers.add_parser(
+        "read",
+        help="Compile a dynamic resolution context around an entry cell",
+    )
+    read_parser.add_argument(
+        "json_file", type=Path, nargs="?", default=None,
+        help="JSON read request (omit to use --entry and the flags below)",
+    )
+    read_parser.add_argument(
+        "target_dir", type=Path, default=Path("."), nargs="?",
+        help="Project root to index",
+    )
+    read_parser.add_argument("--entry", help="Focal cell, e.g. app.py:func:process:start")
+    read_parser.add_argument("--trace-depth", type=int, default=1, help="Call-graph hops rendered in full")
+    read_parser.add_argument(
+        "--trace-type", default="linear", choices=sorted(TRACE_LEVELS),
+        help="How wide a call site may be to be followed",
+    )
+    read_parser.add_argument("--ast", type=int, default=1, help="Layers beyond the trace rendered as skeletons")
+    read_parser.add_argument("--laconic-background", type=int, default=0, help="Layers beyond that rendered as one-liners")
+    read_parser.add_argument("--max-characters", type=int, default=DEFAULT_MAX_CHARACTERS, help="Budget, whitespace excluded")
+    read_parser.add_argument("--trace-exclude-paths", nargs="*", default=[], help="Cell ids to prune entirely")
+    read_parser.add_argument("--trace-keep", nargs="*", default=[], help="Cell ids pinned to full fidelity")
+    read_parser.add_argument("--include-files", nargs="*", default=[], help="Extra files to append verbatim")
+    read_parser.add_argument("--no-gitignore", action="store_true", help="Don't filter via .gitignore")
+    read_parser.add_argument("--include-hidden", action="store_true", help="Include dotted (hidden) dirs/files")
 
     subparsers.add_parser("status", help="Report whether cellsmith is installed and runnable (for agent probes)")
 
@@ -119,6 +154,37 @@ def main() -> None:
             written = write_skill_doc(skill_root)
             logging.info(f"Wrote skill doc to {written}")
         logging.info(f"Processed {len(files)} file(s)")
+    elif args.command == "read":
+        # Both positionals are optional, so `read --entry X .` parks the target
+        # directory in the request-file slot. Shift it back.
+        if args.json_file is not None and args.json_file.is_dir():
+            args.target_dir = args.json_file
+            args.json_file = None
+        if not args.target_dir.exists():
+            logging.error(f"Target does not exist: {args.target_dir}")
+            sys.exit(1)
+        try:
+            if args.json_file is not None:
+                request = ReadRequest.from_file(args.json_file)
+            elif args.entry:
+                request = request_from_args(args)
+            else:
+                logging.error("read requires either a JSON request file or --entry")
+                sys.exit(1)
+        except ValueError as e:
+            logging.error(f"read request rejected: {e}")
+            sys.exit(2)
+
+        graph = build_graph(
+            args.target_dir,
+            use_gitignore=not args.no_gitignore,
+            include_hidden=args.include_hidden,
+        )
+        try:
+            print(compile_read(graph, request))
+        except KeyError as e:
+            logging.error(f"read failed: {e}")
+            sys.exit(5)
     elif args.command == "reannotate":
         if not args.target.exists():
             logging.error(f"Target does not exist: {args.target}")

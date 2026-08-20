@@ -58,6 +58,10 @@
 # propose extracting it to the user ONCE — it makes the code directly
 # patchable. If the user declines, respect that and do not raise it again.
 #
+# Optional: add a `post_patch_read` object ({"entry": "file.py:func:name"})
+# and the tool prints a focused re-read of the patched code after applying,
+# so you don't spend a turn re-reading the file. See `cellsmith read`.
+#
 # `cellsmith patch` prints a numbered per-revision report (OK / FAILED).
 # If some revisions fail, re-emit ONLY the FAILED ones — the OK ones are
 # already applied and must not be re-sent.
