@@ -23,6 +23,7 @@ from cellsmith.annotator import annotate_file
 from cellsmith.constants import FULL_SCHEMA_HEADER, POINTER_HEADER, SKILL_DOC_FILENAME
 from cellsmith.files import iter_target_files, strip_file
 from cellsmith.reader import build_graph
+from cellsmith.workspace import filed_patches, find_patch_file
 from cellsmith.telemetry import (
     AGENTS_DIR,
     ensure_runtime,
@@ -286,8 +287,16 @@ def main() -> None:
             total += strip_file(f, strip_prompt=strip_prompt, strip_markers=strip_markers)
         logging.info(f"Stripped {total} line(s) across {len(files)} file(s)")
     elif args.command in ["patch", "rollback"]:
+        if args.command == "rollback":
+            # `patch` moves the payload into .cellsmith/patches/ once applied,
+            # so a rollback naming the original path still has to find it.
+            args.json_file = find_patch_file(args.json_file, args.target_dir)
         if not args.json_file.exists():
             logging.error(f"JSON file not found: {args.json_file}")
+            if args.command == "rollback":
+                available = filed_patches(args.target_dir)
+                if available:
+                    logging.error(f"Filed payloads: {', '.join(available)}")
             sys.exit(1)
 
         with open(args.json_file, "r", encoding="utf-8") as f:
@@ -299,7 +308,9 @@ def main() -> None:
 
         if args.command == "patch":
             try:
-                all_ok = apply_revisions(data, args.target_dir, trace=args.trace)
+                all_ok = apply_revisions(
+                    data, args.target_dir, trace=args.trace, json_file=args.json_file
+                )
             except AmbiguousMarkerError as e:
                 print(e.report)
                 sys.exit(4)

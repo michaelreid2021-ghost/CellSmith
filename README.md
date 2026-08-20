@@ -9,7 +9,7 @@ It parses the AST, injects non-destructive Jupyter-style markers, validates patc
 ## Features
  
 - **AST-aware annotation** — Automatically places markers around imports, functions, classes, methods, and module sections (`# %% [func:name:start]`, `# %% [class:Foo:start]`, `# %% [method:Cls.x:start]`, protected `# %% [knobs:*]` zones). Nested functions inherit their parent cell.
-- **Surgical JSON patching** — Supports `CELL_PATCH`, `REPLACE`, `CELL_CREATE`, `FILE_CREATE`, and `FILE_MOVE` in a single payload.
+- **Surgical JSON patching** — Supports `CELL_PATCH`, `REPLACE`, `CELL_CREATE`, `FILE_CREATE`, `FILE_MOVE`, and `ARCHIVE` in a single payload.
 - **Token-efficient agent mode** — `annotate-agent` replaces full schema headers with short pointers and writes a single shared `CELLSMITH_PATCH_SCHEMA.md` at the project root.
 - **Mandatory changelog gate** — Every patch must contain a validated `changelog` block. Invalid or missing entries are rejected before any disk writes.
 - **Dynamic resolution context** — `cellsmith read` renders a call-graph slice at three fidelities: full code on the execution trace, signature-and-docstring skeletons beyond it, one-line summaries further out. Bounded by a character budget applied at cell boundaries.
@@ -213,6 +213,57 @@ cellsmith read read_request.json .
 field, wrong type, bad `trace_type`), `5` `entry` matched no cell, or matched
 more than one.
 
+## Workspace Layout
+
+CellSmith keeps its bookkeeping under one hidden directory at the patch
+target root:
+
+```text
+.cellsmith/archive/    files retired by an ARCHIVE revision
+.cellsmith/backups/    pre-patch copies, used by rollback
+.cellsmith/patches/    payloads that have been applied, plus index.jsonl
+CHANGELOG.cellsmith.jsonl   stays at the project root
+```
+
+`.cellsmith/` is added to `.gitignore` on first use, and the `.gitignore` is
+created if the project has none. Paths under `archive/` and `backups/` mirror
+the file's path relative to the project root, so `a/m.py` and `b/m.py` do not
+collide.
+
+Backups used to be written as `.bak` siblings of each source file. Rollback
+still reads those, so backups taken by an older version keep working.
+
+### `ARCHIVE`
+
+Retires a file without deleting it:
+
+```json
+{"filename": "pkg/legacy.py", "revision_type": "ARCHIVE"}
+```
+
+The file moves to `.cellsmith/archive/pkg/legacy.py`. `cellsmith rollback`
+puts it back. Archiving a file that is already archived is refused rather
+than overwriting the archived copy.
+
+Note that `.cellsmith/` is gitignored, so an archived file is untracked once
+archived. Its history remains in git.
+
+### `patch_name`
+
+Optional, at the top level of a payload:
+
+```json
+{"patch_name": "0007-fix-rounding.json", "revisions": [], "changelog": []}
+```
+
+After a payload is applied it moves into `.cellsmith/patches/`, under
+`patch_name` if given. Payloads without the key keep their original filename,
+so existing patch files are unaffected. A rejected payload stays where it is.
+
+`.cellsmith/patches/index.jsonl` records the name each payload arrived under
+and the name it was filed as, so `cellsmith rollback old-name.json` still
+resolves after a rename.
+
 ## Focal Telemetry (`--trace`, `finalize`)
 
 Application logs are chronological and mix every subsystem together. After
@@ -270,6 +321,7 @@ src/cellsmith/
 ├── files.py          # backups, strip_file(), target discovery, .gitignore
 ├── constants.py      # shared constants + template loader
 ├── telemetry.py      # @focal_trace injection, stripping, finalize
+├── workspace.py      # .cellsmith/ support dirs, backups, patch filing
 ├── reader/           # CellRead subsystem
 │   ├── graph.py      # CellGraph: cells + statically resolved call edges
 │   ├── compiler.py   # mixed-fidelity renderer (full / skeleton / laconic)
