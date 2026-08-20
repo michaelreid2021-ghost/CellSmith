@@ -12,6 +12,8 @@ It parses the AST, injects non-destructive Jupyter-style markers, validates patc
 - **Surgical JSON patching** — Supports `CELL_PATCH`, `REPLACE`, `CELL_CREATE`, `FILE_CREATE`, and `FILE_MOVE` in a single payload.
 - **Token-efficient agent mode** — `annotate-agent` replaces full schema headers with short pointers and writes a single shared `CELLSMITH_PATCH_SCHEMA.md` at the project root.
 - **Mandatory changelog gate** — Every patch must contain a validated `changelog` block. Invalid or missing entries are rejected before any disk writes.
+- **Dynamic resolution context** — `cellsmith read` compiles a focused slice of the call graph: full code along the execution trace, AST skeletons beyond it, one-line summaries in the background, inside a character budget that never splits a cell.
+- **Unambiguous targeting** — A `cell_id` must resolve to exactly one marker. Duplicates reject the payload before any write rather than patching the wrong region, and `cellsmith reannotate` regenerates markers from the AST.
 - **Safety defaults** — Automatic versioned backups, post-patch syntax validation, and atomic rollback.
 ## Installation
  
@@ -205,6 +207,10 @@ cellsmith read read_request.json .
   replaced by a `[TRACE_TRUNCATED]` breadcrumb.
 - Add `post_patch_read` to a patch payload to get the same focused read back
   automatically after a successful patch.
+
+`cellsmith read` exit codes: `0` compiled, `2` the request was invalid
+(unknown field, bad type, bad `trace_type`), `5` the `entry` matched no cell
+or was ambiguous across several.
 
 ## Project Layout
  
