@@ -146,6 +146,77 @@ before any disk writes happen. Accepted entries are appended to
 | `timestamp` | no | ISO-8601 UTC; `cellsmith patch` fills it in at apply time if omitted |
 | `author` | no | Free-form model/agent identifier |
 
+## Reading before you patch — `cellsmith read`
+
+Do not read whole files. `cellsmith read` compiles a **dynamic resolution
+context**: full code along the execution trace from an entry cell, AST
+skeletons one or more layers beyond it, and one-line summaries in the far
+background. Emit a JSON request:
+
+```json
+{
+  "read_request": {
+    "entry": "api/routes.py:func:process_payment:start",
+    "trace_depth": 2,
+    "trace_type": "branching",
+    "ast_layers": 2,
+    "laconic_background_layers": 1,
+    "max_characters": 50000,
+    "trace_exclude_paths": ["func:validate_headers"],
+    "trace_keep": ["func:_calculate_tax_offset"],
+    "include_files": ["docs/payment_flow.md"]
+  }
+}
+```
+
+```bash
+cellsmith read read_request.json .
+```
+
+| Field | Required | Notes |
+|---|---|---|
+| `entry` | yes | Focal cell. `file.py:func:name`, with or without `:start` |
+| `trace_depth` | no | Call-graph hops rendered at full fidelity. Default 1 |
+| `trace_type` | no | `linear` \| `branching` \| `loops` \| `all`. How wide a call site may be to be followed. Default `linear` |
+| `ast_layers` | no | Layers past the trace rendered as signature + docstring. Default 1 |
+| `laconic_background_layers` | no | Layers past that rendered as one-liners. Default 0 |
+| `max_characters` | no | Budget, whitespace excluded. Default 50000 |
+| `trace_exclude_paths` | no | Cell ids pruned entirely |
+| `trace_keep` | no | Cell ids pinned to full fidelity regardless of depth or budget |
+| `include_files` | no | Extra files appended verbatim |
+
+Notes on what you get back:
+
+- **Docstrings are inverted by design.** Full-fidelity cells have theirs
+  stripped (you are reading the implementation); AST skeletons keep theirs
+  (it is all you get). Write good docstrings — they *are* the summary layer.
+- **Class cells render as a shell.** Methods are their own cells and appear
+  separately at their own fidelity, so a class body is never duplicated.
+- **The budget is evaluated only at cell boundaries**, never mid-cell. A cell
+  overrunning by less than 500 characters is committed whole; past that the
+  cell is replaced by a `[TRACE_TRUNCATED]` breadcrumb. Re-read with a new
+  `entry` to expand it.
+- Each file's imports cell is included so what you read stays coherent.
+
+### `post_patch_read` — verify without burning a turn
+
+Add it to a patch payload and `cellsmith patch` compiles the read for you
+after a fully successful patch, printing it to stdout:
+
+```json
+{
+  "revisions": [ ... ],
+  "changelog": [ ... ],
+  "post_patch_read": {
+    "entry": "api/routes.py:func:process_payment",
+    "trace_exclude_paths": ["func:validate_headers"]
+  }
+}
+```
+
+It takes the same fields as `read_request`, and is validated up front — a
+malformed one rejects the payload before anything is written.
+
 ## Step 3 — hand off the JSON
 
 Save the JSON as `patch.json` (or any name) and let the user (or your shell

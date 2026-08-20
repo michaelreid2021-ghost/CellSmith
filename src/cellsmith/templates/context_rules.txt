@@ -1,0 +1,16 @@
+# %% [ai_schema:context_rules]
+# DYNAMIC RESOLUTION CONTEXT
+# Full code is provided only for the immediate execution trace. Surrounding
+# context is degraded to AST skeletons to conserve token budget, and distant
+# dependencies to one-line summaries.
+#
+# Docstrings are omitted from full-fidelity cells (you are reading the
+# implementation) and preserved on AST skeletons (they are all you get).
+#
+# [TRACE_TRUNCATED] indicates dependencies that exceeded the read budget.
+#
+# NEXT STEPS (Choose ONE):
+# 1. PATCH: If the code requiring modification is fully visible, generate your JSON patch.
+# 2. SHIFT: If the required code is missing or truncated, execute `CellRead` with a new `entry`.
+# 3. REFINE: If the context is too noisy, execute `CellRead` with `trace_exclude_paths`.
+# %% [ai_schema:end]
