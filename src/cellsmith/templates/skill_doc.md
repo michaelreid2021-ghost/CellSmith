@@ -53,7 +53,7 @@ cellsmith status
 | Field | Required | Notes |
 |---|---|---|
 | `filename` | yes | Path relative to the patch target dir |
-| `revision_type` | yes | `REPLACE` \| `CELL_PATCH` \| `CELL_CREATE` \| `FILE_CREATE` \| `FILE_MOVE` \| `ARCHIVE` |
+| `revision_type` | yes | `REPLACE` \| `CELL_PATCH` \| `CELL_CREATE` \| `FILE_CREATE` \| `FILE_MOVE` \| `FILE_DELETE` \| `ARCHIVE` |
 | `cell_id` | for CELL_PATCH | Must match an existing `# %% [<cell_id>]` marker. For paired cells, target the `:start` marker |
 | `code_content` | for patching | For CELL_PATCH: the **complete cell**, beginning with its `:start` marker and including the matching `:end` marker — never a partial diff. For REPLACE / FILE_CREATE: **plain code only** — no markers, no schema header (annotation is applied automatically after a successful patch) |
 | `new_filename` | for FILE_MOVE | The destination path |
@@ -65,9 +65,10 @@ Tool selection (the user pays per token — pick the laconic one):
 - `CELL_CREATE` — add new logic to an annotated file (plain code, no markers; place with `append_after`)
 - `FILE_CREATE` — brand new file from scratch (plain code, no markers)
 - `FILE_MOVE` — rename or move a file
-- `ARCHIVE` — retire a file you are removing from the build. It moves to
-  `.cellsmith/archive/`, keeping its path, and a rollback puts it back.
-  Use this rather than emptying a file you no longer want.
+- `FILE_DELETE` — delete a file. Use it whenever you mean "remove this
+  file"; do not empty a file out instead.
+- `ARCHIVE` — the same mechanism, when you mean "retire this, I may want
+  it back" rather than "delete this".
 
 ### Placement, classes, and nesting
 
@@ -256,6 +257,22 @@ cellsmith finalize .
 That strips every `@focal_trace` decorator and the import preamble. The
 decorator lives above the cell's `:start` marker, so it survives your later
 patches — keep emitting pure logic and do not write decorators yourself.
+
+### Deleting files is recoverable
+
+`FILE_DELETE` removes the file from the working tree — git reports it as
+deleted at the next commit, exactly as if you had removed it. CellSmith keeps
+the content in `.cellsmith/archive/` so the delete can be undone before that
+commit.
+
+This matters mid-refactor. Git can only take you back to the last commit, so
+a plain delete at step 10 of a 15-step refactor means discarding all 15 steps
+to get the file back. With `FILE_DELETE`, `cellsmith rollback` on that
+payload restores it and leaves the other steps alone.
+
+Deleting the same path more than once in a session is fine. Each version is
+kept (`doomed.py`, `doomed.py.1`, ...), so rolling the payloads back in
+reverse order restores the right version each time.
 
 ## Naming your payload — `patch_name`
 

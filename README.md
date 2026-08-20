@@ -9,7 +9,8 @@ It parses the AST, injects non-destructive Jupyter-style markers, validates patc
 ## Features
  
 - **AST-aware annotation** — Automatically places markers around imports, functions, classes, methods, and module sections (`# %% [func:name:start]`, `# %% [class:Foo:start]`, `# %% [method:Cls.x:start]`, protected `# %% [knobs:*]` zones). Nested functions inherit their parent cell.
-- **Surgical JSON patching** — Supports `CELL_PATCH`, `REPLACE`, `CELL_CREATE`, `FILE_CREATE`, `FILE_MOVE`, and `ARCHIVE` in a single payload.
+- **Surgical JSON patching** — Supports `CELL_PATCH`, `REPLACE`, `CELL_CREATE`, `FILE_CREATE`, `FILE_MOVE`, `FILE_DELETE`, and `ARCHIVE` in a single payload.
+- **Recoverable deletes** — `FILE_DELETE` removes a file from the working tree and keeps its content in `.cellsmith/archive/`, so a delete made mid-refactor can be undone without discarding every change since the last commit.
 - **Token-efficient agent mode** — `annotate-agent` replaces full schema headers with short pointers and writes a single shared `CELLSMITH_PATCH_SCHEMA.md` at the project root.
 - **Mandatory changelog gate** — Every patch must contain a validated `changelog` block. Invalid or missing entries are rejected before any disk writes.
 - **Dynamic resolution context** — `cellsmith read` renders a call-graph slice at three fidelities: full code on the execution trace, signature-and-docstring skeletons beyond it, one-line summaries further out. Bounded by a character budget applied at cell boundaries.
@@ -233,20 +234,28 @@ collide.
 Backups used to be written as `.bak` siblings of each source file. Rollback
 still reads those, so backups taken by an older version keep working.
 
-### `ARCHIVE`
-
-Retires a file without deleting it:
+### `FILE_DELETE` and `ARCHIVE`
 
 ```json
-{"filename": "pkg/legacy.py", "revision_type": "ARCHIVE"}
+{"filename": "pkg/legacy.py", "revision_type": "FILE_DELETE"}
 ```
 
-The file moves to `.cellsmith/archive/pkg/legacy.py`. `cellsmith rollback`
-puts it back. Archiving a file that is already archived is refused rather
-than overwriting the archived copy.
+The file leaves the working tree, so git reports it as deleted at the next
+commit, the same as a plain `rm`. Its content moves to
+`.cellsmith/archive/pkg/legacy.py`, and `cellsmith rollback` on that payload
+brings it back.
 
-Note that `.cellsmith/` is gitignored, so an archived file is untracked once
-archived. Its history remains in git.
+The point is recovery between commits. Git can only return you to the last
+commit, so deleting a file at step 10 of a 15-step refactor otherwise means
+throwing away all 15 steps to recover it. Rolling back one payload restores
+the file and leaves the rest of the work in place.
+
+Deleting the same path more than once in a session keeps every version —
+`legacy.py`, `legacy.py.1`, and so on — so rolling the payloads back in
+reverse order restores the right version each time.
+
+`ARCHIVE` is the same mechanism under a different name, for retiring a file
+you may want back rather than deleting one.
 
 ### `patch_name`
 

@@ -112,10 +112,66 @@ def legacy_backup_path(filepath: Path, index: int = 0) -> Path:
 
 
 # %% [func:archive_path:start]
-def archive_path(filepath: Path, root: Path) -> Path:
-    """Where an ARCHIVE revision puts `filepath`."""
-    return archive_dir(root) / _relative_to_root(filepath, root)
+def archive_path(filepath: Path, root: Path, index: int = 0) -> Path:
+    """Where an archived copy of `filepath` lives.
+
+    Index 0 is the most recent copy and keeps the file's own name, so an
+    archived file stays directly readable. Higher indices are older copies of
+    the same path (`old.py.1`, `old.py.2`, ...) — a path can be deleted,
+    recreated and deleted again within one session, and each version has to
+    remain recoverable.
+    """
+    relative = _relative_to_root(filepath, root)
+    if index == 0:
+        return archive_dir(root) / relative
+    return archive_dir(root) / relative.parent / f"{relative.name}.{index}"
 # %% [func:archive_path:end]
+
+
+# %% [func:store_in_archive:start]
+def store_in_archive(filepath: Path, root: Path) -> Path:
+    """Move `filepath` into the archive, ageing any copies already there."""
+    destination = archive_path(filepath, root)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    index = 1
+    while archive_path(filepath, root, index).exists():
+        index += 1
+    for i in range(index - 1, 0, -1):
+        shutil.move(
+            str(archive_path(filepath, root, i)),
+            str(archive_path(filepath, root, i + 1)),
+        )
+    if destination.exists():
+        shutil.move(str(destination), str(archive_path(filepath, root, 1)))
+
+    shutil.move(str(filepath), str(destination))
+    return destination
+# %% [func:store_in_archive:end]
+
+
+# %% [func:restore_from_archive:start]
+def restore_from_archive(filepath: Path, root: Path) -> bool:
+    """Put the most recent archived copy of `filepath` back, ageing the rest.
+
+    Returns False when nothing was archived under that path.
+    """
+    current = archive_path(filepath, root)
+    if not current.exists():
+        return False
+
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(current), str(filepath))
+
+    index = 1
+    while archive_path(filepath, root, index).exists():
+        shutil.move(
+            str(archive_path(filepath, root, index)),
+            str(archive_path(filepath, root, index - 1)),
+        )
+        index += 1
+    return True
+# %% [func:restore_from_archive:end]
 
 
 # %% [func:ensure_ignored:start]
