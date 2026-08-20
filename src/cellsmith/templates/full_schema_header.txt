@@ -50,6 +50,11 @@
 #   * FILE_CREATE : To create a brand new file. Plain code only — annotation
 #                   is handled by the tool, same as REPLACE.
 #   * FILE_MOVE   : To move/rename a file (requires 'new_filename' field).
+#   * ARCHIVE     : To retire a file. Moves it to .cellsmith/archive/,
+#                   preserving its path. Reversible via rollback.
+#
+# Optional top-level `patch_name`: the payload is filed under this name in
+# .cellsmith/patches/ after it is applied.
 #
 # Nested (inner) functions have NO markers and are never patchable on their
 # own — they are part of their parent's cell. CELL_PATCH the parent.

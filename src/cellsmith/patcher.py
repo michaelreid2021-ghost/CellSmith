@@ -22,7 +22,7 @@ import logging
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from cellsmith.annotator import annotate_file, plan_insertions
 from cellsmith.constants import (
@@ -36,6 +36,13 @@ from cellsmith.constants import (
 from cellsmith.files import create_backup, strip_lines
 from cellsmith.reader.schema import ReadRequest
 from cellsmith.telemetry import ensure_runtime, instrument_file
+from cellsmith.workspace import (
+    archive_path,
+    backup_path,
+    ensure_support_dirs,
+    legacy_backup_path,
+    store_patch_file,
+)
 # %% [imports:end]
 
 
@@ -371,7 +378,13 @@ def _detect_header(filepath: Path, target_dir: Path) -> str:
 # %% [func:_detect_header:end]
 
 # %% [func:apply_revisions:start]
-def apply_revisions(data: dict, target_dir: Path, *, trace: bool = False) -> bool:
+def apply_revisions(
+    data: dict,
+    target_dir: Path,
+    *,
+    trace: bool = False,
+    json_file: Optional[Path] = None,
+) -> bool:
     """Apply a patch payload.
 
     Prints an ordered, numbered per-operation report (OK / FAILED with a
@@ -396,7 +409,7 @@ def apply_revisions(data: dict, target_dir: Path, *, trace: bool = False) -> boo
 
     def _ensure_backup(filepath: Path):
         if filepath not in backed_up_files:
-            create_backup(filepath)
+            create_backup(filepath, target_dir)
             backed_up_files.add(filepath)
 
     def _ok(label: str, message: str) -> None:
@@ -435,6 +448,7 @@ def apply_revisions(data: dict, target_dir: Path, *, trace: bool = False) -> boo
         "FILE_CREATE": "File Create",
         "CELL_CREATE": "Cell Create",
         "FILE_MOVE": "File Move",
+        "ARCHIVE": "Archive",
     }
 
     revisions = data.get("revisions", [])
@@ -451,6 +465,23 @@ def apply_revisions(data: dict, target_dir: Path, *, trace: bool = False) -> boo
             _fail(label, "missing `filename`.")
             continue
         target_file = target_dir / filename
+
+        if rev_type == "ARCHIVE":
+            if not target_file.exists():
+                _fail(label, f"cannot archive {filename}: file does not exist.")
+                continue
+            destination = archive_path(target_file, target_dir)
+            if destination.exists():
+                _fail(label, (
+                    f"{filename} is already archived at {destination}. "
+                    "Remove or rename the archived copy first."
+                ))
+                continue
+            ensure_support_dirs(target_dir)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(target_file), str(destination))
+            _ok(label, f"archived {filename}")
+            continue
 
         if rev_type == "FILE_MOVE":
             new_filename = rev.get("new_filename")
@@ -642,6 +673,11 @@ def apply_revisions(data: dict, target_dir: Path, *, trace: bool = False) -> boo
     else:
         logging.warning("No operations applied; changelog not recorded.")
 
+    # File the payload away once it has been applied. A rejected payload is
+    # left where it is so the agent can fix it in place and retry.
+    if any_success and json_file is not None:
+        store_patch_file(json_file, target_dir, data.get("patch_name"))
+
     if all_ok and read_request is not None:
         _run_post_patch_read(read_request, target_dir)
     return all_ok
@@ -652,6 +688,15 @@ def rollback_revisions(data: dict, target_dir: Path) -> None:
     """Reverts changes applied by a JSON patch."""
     revisions = data.get("revisions", [])
     for rev in revisions:
+        if rev.get("revision_type") == "ARCHIVE":
+            original = target_dir / rev["filename"]
+            archived = archive_path(original, target_dir)
+            if archived.exists():
+                original.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(archived), str(original))
+                logging.info(f"Reverted ARCHIVE: {archived} -> {original}")
+            continue
+
         if rev.get("revision_type") == "FILE_MOVE":
             old_file = target_dir / rev["filename"]
             new_file = target_dir / rev.get("new_filename", "")
@@ -661,23 +706,33 @@ def rollback_revisions(data: dict, target_dir: Path) -> None:
                 logging.info(f"Reverted FILE_MOVE: {new_file} -> {old_file}")
 
     def _restore_from_backup(target_file: Path) -> bool:
-        """Restore target_file from its .bak (rotating numbered backups down).
-        Returns True if a backup existed and was restored."""
-        backup_path = target_file.with_suffix(target_file.suffix + ".bak")
-        if not backup_path.exists():
+        """Restore target_file from its most recent backup, rotating the rest down.
+
+        Looks in `.cellsmith/backups/` first, then beside the source file, so
+        backups taken before the support directory existed still roll back.
+        """
+        current = backup_path(target_file, target_dir)
+        legacy = False
+        if not current.exists():
+            current = legacy_backup_path(target_file)
+            legacy = True
+        if not current.exists():
             return False
-        shutil.copy2(backup_path, target_file)
-        backup_path.unlink()
+
+        target_file.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(current, target_file)
+        current.unlink()
         logging.info(f"Restored file from backup (rollback): {target_file}")
 
+        def _at(index: int) -> Path:
+            return (
+                legacy_backup_path(target_file, index) if legacy
+                else backup_path(target_file, target_dir, index)
+            )
+
         idx = 1
-        while target_file.with_suffix(f"{target_file.suffix}.bak.{idx}").exists():
-            old_bak = target_file.with_suffix(f"{target_file.suffix}.bak.{idx}")
-            if idx == 1:
-                new_bak = target_file.with_suffix(target_file.suffix + ".bak")
-            else:
-                new_bak = target_file.with_suffix(f"{target_file.suffix}.bak.{idx-1}")
-            shutil.move(old_bak, new_bak)
+        while _at(idx).exists():
+            shutil.move(str(_at(idx)), str(_at(idx - 1)))
             idx += 1
         return True
 
@@ -695,7 +750,7 @@ def rollback_revisions(data: dict, target_dir: Path) -> None:
 
     for rev in revisions:
         rev_type = rev.get("revision_type")
-        if rev_type == "FILE_MOVE":
+        if rev_type in ("FILE_MOVE", "ARCHIVE"):
             continue
 
         target_file = target_dir / rev["filename"]

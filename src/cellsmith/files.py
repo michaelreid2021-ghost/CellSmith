@@ -15,28 +15,40 @@
 import logging
 import shutil
 from pathlib import Path
-from typing import List
+from typing import List, Optional
+
+from cellsmith.workspace import backup_path, backups_dir
 # %% [imports:end]
 
 
 # %% [func:create_backup:start]
-def create_backup(filepath: Path) -> None:
-    if filepath.exists():
-        backup_idx = 1
-        while filepath.with_suffix(f"{filepath.suffix}.bak.{backup_idx}").exists():
-            backup_idx += 1
+def create_backup(filepath: Path, root: Optional[Path] = None) -> Optional[Path]:
+    """Copy `filepath` into the project's backup store, rotating older copies.
 
-        for i in range(backup_idx - 1, 0, -1):
-            old_bak = filepath.with_suffix(f"{filepath.suffix}.bak.{i}")
-            new_bak = filepath.with_suffix(f"{filepath.suffix}.bak.{i+1}")
-            shutil.move(old_bak, new_bak)
+    Backups live under `.cellsmith/backups/`, mirroring the file's path
+    relative to `root`, rather than as `.bak` siblings of the source. Returns
+    the path written, or None when there was nothing to back up.
+    """
+    if not filepath.exists():
+        return None
 
-        backup_path = filepath.with_suffix(filepath.suffix + ".bak")
-        if backup_path.exists():
-            shutil.move(backup_path, filepath.with_suffix(filepath.suffix + ".bak.1"))
+    root = root if root is not None else filepath.parent
 
-        shutil.copy2(filepath, backup_path)
-        logging.info(f"Created versioned backup: {backup_path}")
+    backup_idx = 1
+    while backup_path(filepath, root, backup_idx).exists():
+        backup_idx += 1
+
+    for i in range(backup_idx - 1, 0, -1):
+        shutil.move(str(backup_path(filepath, root, i)), str(backup_path(filepath, root, i + 1)))
+
+    current = backup_path(filepath, root)
+    current.parent.mkdir(parents=True, exist_ok=True)
+    if current.exists():
+        shutil.move(str(current), str(backup_path(filepath, root, 1)))
+
+    shutil.copy2(filepath, current)
+    logging.info(f"Created versioned backup: {current}")
+    return current
 # %% [func:create_backup:end]
 
 
@@ -153,6 +165,7 @@ def iter_target_files(
         return [target] if target.suffix in (".py", ".yaml", ".yml") else []
 
     spec = _load_gitignore(target) if use_gitignore else None
+    backups_root = backups_dir(target).resolve()
     results: List[Path] = []
 
     for path in target.rglob("*"):
@@ -164,6 +177,9 @@ def iter_target_files(
         if not include_hidden and any(p.startswith(".") for p in parts):
             continue
         if any(p.startswith("__") and p.endswith("__") for p in parts[:-1]):
+            continue
+        # Backups now live inside the project; never annotate them.
+        if backups_root in path.resolve().parents:
             continue
         if path.suffix not in (".py", ".yaml", ".yml"):
             continue

@@ -53,7 +53,7 @@ cellsmith status
 | Field | Required | Notes |
 |---|---|---|
 | `filename` | yes | Path relative to the patch target dir |
-| `revision_type` | yes | `REPLACE` \| `CELL_PATCH` \| `CELL_CREATE` \| `FILE_CREATE` \| `FILE_MOVE` |
+| `revision_type` | yes | `REPLACE` \| `CELL_PATCH` \| `CELL_CREATE` \| `FILE_CREATE` \| `FILE_MOVE` \| `ARCHIVE` |
 | `cell_id` | for CELL_PATCH | Must match an existing `# %% [<cell_id>]` marker. For paired cells, target the `:start` marker |
 | `code_content` | for patching | For CELL_PATCH: the **complete cell**, beginning with its `:start` marker and including the matching `:end` marker — never a partial diff. For REPLACE / FILE_CREATE: **plain code only** — no markers, no schema header (annotation is applied automatically after a successful patch) |
 | `new_filename` | for FILE_MOVE | The destination path |
@@ -65,6 +65,9 @@ Tool selection (the user pays per token — pick the laconic one):
 - `CELL_CREATE` — add new logic to an annotated file (plain code, no markers; place with `append_after`)
 - `FILE_CREATE` — brand new file from scratch (plain code, no markers)
 - `FILE_MOVE` — rename or move a file
+- `ARCHIVE` — retire a file you are removing from the build. It moves to
+  `.cellsmith/archive/`, keeping its path, and a rollback puts it back.
+  Use this rather than emptying a file you no longer want.
 
 ### Placement, classes, and nesting
 
@@ -253,6 +256,38 @@ cellsmith finalize .
 That strips every `@focal_trace` decorator and the import preamble. The
 decorator lives above the cell's `:start` marker, so it survives your later
 patches — keep emitting pure logic and do not write decorators yourself.
+
+## Naming your payload — `patch_name`
+
+Optional, top level, alongside `revisions` and `changelog`:
+
+```json
+{
+  "patch_name": "0007-fix-payment-rounding.json",
+  "revisions": [ ... ],
+  "changelog": [ ... ]
+}
+```
+
+Once applied, `cellsmith patch` moves the payload into `.cellsmith/patches/`
+under that name. Omit it and the file keeps the name it arrived with. A
+rejected payload is left where it is so you can correct it and retry.
+
+Rolling back works with either name — `cellsmith rollback` looks in
+`.cellsmith/patches/` and consults the index that records where each payload
+was filed.
+
+## Where CellSmith keeps its own files
+
+```text
+.cellsmith/archive/    files retired by ARCHIVE
+.cellsmith/backups/    pre-patch copies, used by rollback
+.cellsmith/patches/    payloads already applied
+CHANGELOG.cellsmith.jsonl   stays at the project root
+```
+
+`.cellsmith/` is added to `.gitignore` automatically, and the `.gitignore` is
+created if the project has none. Do not patch anything under `.cellsmith/`.
 
 ## Step 3 — hand off the JSON
 
