@@ -31,6 +31,10 @@ VALID_CHANGE_TYPES = frozenset({
     "refactor",
     "schema_migration",
 })
+
+# File types CellSmith parses into cells — the single source of truth for
+# what the annotator, the walkers and the survey tools consider supported.
+SUPPORTED_SUFFIXES = (".py", ".yaml", ".yml")
 # %% [module:init:2:end]
 
 

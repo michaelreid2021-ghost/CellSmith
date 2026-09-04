@@ -15,8 +15,9 @@
 import logging
 import shutil
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
+from cellsmith.constants import SUPPORTED_SUFFIXES
 from cellsmith.workspace import backup_path, support_root
 # %% [imports:end]
 
@@ -133,19 +134,40 @@ def strip_file(
 # %% [func:strip_file:end]
 
 
-# %% [func:_load_gitignore:start]
-def _load_gitignore(root: Path):
-    """Return a pathspec.PathSpec built from <root>/.gitignore, or None."""
-    gi = root / ".gitignore"
-    if not gi.exists():
+# %% [func:build_ignore_spec:start]
+def build_ignore_spec(lines: List[str]):
+    """Compile gitwildmatch ignore lines into a pathspec.PathSpec, or None."""
+    if not lines:
         return None
     try:
         import pathspec
     except ImportError:
-        logging.warning("pathspec not installed; skipping .gitignore filtering")
+        logging.warning("pathspec not installed; skipping ignore filtering")
         return None
-    with open(gi, "r", encoding="utf-8") as f:
-        return pathspec.PathSpec.from_lines("gitwildmatch", f.readlines())
+    return pathspec.PathSpec.from_lines("gitwildmatch", list(lines))
+# %% [func:build_ignore_spec:end]
+
+
+# %% [func:load_ignore_spec:start]
+def load_ignore_spec(directory: Path, names: Tuple[str, ...] = (".gitignore", ".ignore")):
+    """Return a pathspec.PathSpec built from the named ignore files in `directory`, or None."""
+    lines: List[str] = []
+    for name in names:
+        candidate = directory / name
+        if candidate.is_file():
+            try:
+                with open(candidate, "r", encoding="utf-8") as f:
+                    lines.extend(f.readlines())
+            except (OSError, UnicodeDecodeError):
+                continue
+    return build_ignore_spec(lines)
+# %% [func:load_ignore_spec:end]
+
+
+# %% [func:_load_gitignore:start]
+def _load_gitignore(root: Path):
+    """Return a pathspec.PathSpec built from <root>/.gitignore, or None."""
+    return load_ignore_spec(root, names=(".gitignore",))
 # %% [func:_load_gitignore:end]
 
 
@@ -162,7 +184,7 @@ def iter_target_files(
     by default, and honors the nearest .gitignore at `target` if present.
     """
     if target.is_file():
-        return [target] if target.suffix in (".py", ".yaml", ".yml") else []
+        return [target] if target.suffix in SUPPORTED_SUFFIXES else []
 
     spec = _load_gitignore(target) if use_gitignore else None
     support = support_root(target).resolve()
@@ -183,7 +205,7 @@ def iter_target_files(
         # never be walked as if they were part of the project.
         if support in path.resolve().parents:
             continue
-        if path.suffix not in (".py", ".yaml", ".yml"):
+        if path.suffix not in SUPPORTED_SUFFIXES:
             continue
         if spec is not None and spec.match_file(rel.as_posix()):
             continue

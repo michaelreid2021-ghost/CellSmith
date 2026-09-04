@@ -28,9 +28,22 @@ import re
 from pathlib import Path
 from typing import List, Tuple
 
-from cellsmith.constants import FULL_SCHEMA_HEADER, POINTER_HEADER
+from cellsmith.constants import FULL_SCHEMA_HEADER, POINTER_HEADER, SUPPORTED_SUFFIXES
 from cellsmith.files import strip_lines
 # %% [imports:end]
+
+
+# %% [func:is_main_guard:start]
+def is_main_guard(stmt: ast.stmt) -> bool:
+    """True for a top-level `if __name__ == '__main__':` guard."""
+    return (
+        isinstance(stmt, ast.If)
+        and isinstance(stmt.test, ast.Compare)
+        and isinstance(stmt.test.left, ast.Name)
+        and stmt.test.left.id == "__name__"
+        and any(isinstance(op, ast.Eq) for op in stmt.test.ops)
+    )
+# %% [func:is_main_guard:end]
 
 
 # %% [class:CellAnnotator:start]
@@ -121,15 +134,9 @@ class CellAnnotator(ast.NodeVisitor):
                 continue
 
             is_import = isinstance(stmt, IMPORT_NODES)
-            is_main_guard = (
-                isinstance(stmt, ast.If)
-                and isinstance(stmt.test, ast.Compare)
-                and isinstance(stmt.test.left, ast.Name)
-                and stmt.test.left.id == "__name__"
-                and any(isinstance(op, ast.Eq) for op in stmt.test.ops)
-            )
+            is_guard = is_main_guard(stmt)
 
-            if is_main_guard:
+            if is_guard:
                 _flush_group()
                 current_kind = "main_guard"
                 group_start_line = stmt.lineno
@@ -233,7 +240,7 @@ def annotate_file(filepath: Path, header: str = FULL_SCHEMA_HEADER) -> None:
         logging.error(f"File not found: {filepath}")
         return
 
-    if filepath.suffix not in (".py", ".yaml", ".yml"):
+    if filepath.suffix not in SUPPORTED_SUFFIXES:
         return
 
     # Enforce pointer header for YAML files regardless of caller argument

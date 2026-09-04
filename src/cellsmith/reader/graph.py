@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
-from cellsmith.annotator import plan_insertions
+from cellsmith.annotator import is_main_guard, plan_insertions
 from cellsmith.files import iter_target_files, strip_lines
 # %% [imports:end]
 
@@ -361,6 +361,29 @@ class CellGraph:
                 # flat namespace — only module-level names claim a slot.
                 if not class_name:
                     index.local_defs.setdefault(node.name, cell_id)
+
+            elif kind == "module":
+                # Module-level clusters (the `__main__` guard, init blocks)
+                # hold plain statements rather than definitions, so there is
+                # no single AST node to visit — collect the calls of every
+                # top-level statement that falls in the cell's line span.
+                collector = _CallCollector()
+                for stmt in tree.body:
+                    if not (start <= stmt.lineno and getattr(stmt, "end_lineno", stmt.lineno) < end):
+                        continue
+                    if cell_id == "module:main_guard" and is_main_guard(stmt):
+                        # The guard's test is the entry marker, not a branch
+                        # the caller must justify: its body is the program's
+                        # execution path, followed at linear width. An
+                        # else-clause, if any, is a genuine branch.
+                        for child in stmt.body:
+                            collector.visit(child)
+                        for child in stmt.orelse:
+                            collector._descend(child, BRANCHING)
+                    else:
+                        collector.visit(stmt)
+                node.calls = collector.calls
+                node.self_calls = collector.self_calls
 
             self.nodes[node.key] = node
 

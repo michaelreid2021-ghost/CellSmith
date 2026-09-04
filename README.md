@@ -13,7 +13,7 @@ It parses the AST, injects non-destructive Jupyter-style markers, validates patc
 - **Recoverable deletes** — `FILE_DELETE` removes a file from the working tree and keeps its content in `.cellsmith/archive/`, so a delete made mid-refactor can be undone without discarding every change since the last commit.
 - **Token-efficient agent mode** — `annotate-agent` replaces full schema headers with short pointers and writes a single shared `CELLSMITH_PATCH_SCHEMA.md` at the project root.
 - **Mandatory changelog gate** — Every patch must contain a validated `changelog` block. Invalid or missing entries are rejected before any disk writes.
-- **Dynamic resolution context** — `cellsmith read` renders a call-graph slice at three fidelities: full code on the execution trace, signature-and-docstring skeletons beyond it, one-line summaries further out. Bounded by a character budget applied at cell boundaries.
+- **Dynamic resolution context** — `cellsmith read` renders a call-graph slice at three fidelities: full code on the execution trace, signature-and-docstring skeletons beyond it, one-line summaries further out. Bounded by a character budget applied at cell boundaries. Four discovery flags (`--list-start-cell`, `--tree`, `--get-cell-list`, `--get-file-contents`) answer orientation questions so agents never reach for `cat`, `ls` or `find`.
 - **Unambiguous targeting** — A `cell_id` must resolve to exactly one marker. Duplicate markers are rejected with exit code `4` before any write. `cellsmith reannotate` regenerates markers from the AST.
 - **Ephemeral focal telemetry** — `patch --trace` wraps the patched cells in a `@focal_trace` decorator that writes one JSON record per call to `.agents/logs/focal_session.jsonl`. `cellsmith finalize` removes it again.
 - **Safety defaults** — Automatic versioned backups, post-patch syntax validation, and atomic rollback.
@@ -210,9 +210,43 @@ cellsmith read read_request.json .
 - Add `post_patch_read` to a patch payload to get the same focused read back
   automatically after a successful patch.
 
-`cellsmith read` exit codes: `0` compiled, `2` invalid request (unknown
-field, wrong type, bad `trace_type`), `5` `entry` matched no cell, or matched
-more than one.
+### Orientation subcommands
+
+A trace needs an entry cell, and finding one is an orientation problem. Four
+discovery flags on `read` answer the questions that would otherwise reach
+for `cat`, `ls` or `find`. They are mutually exclusive, take a target
+directory only (no `--entry`, no JSON request), skip the graph build
+entirely, and every answer points back at the cell-aware tools:
+
+```bash
+# Where does execution begin? Manifests are ranked — pyproject.toml
+# console scripts, setup.cfg/setup.py entry points, Dockerfile*
+# ENTRYPOINT/CMD — with a main.py/app.py fallback when nothing resolves.
+cellsmith read --list-start-cell .
+
+# The whole project in one call. Honors .gitignore and .ignore at every
+# level, includes hidden files, skips .git and .cellsmith/.
+cellsmith read --tree .
+
+# Table of contents for one supported file (.py/.yaml/.yml): every cell
+# with line spans, plus a suggested entry cell.
+cellsmith read --get-cell-list auth.py .
+
+# Raw text — but only for types CellSmith does not parse. Supported types
+# get an alert pointing at the cell-aware tools instead (the anti-cat
+# guard), and output is capped at 100,000 characters.
+cellsmith read --get-file-contents docs/flow.md .
+```
+
+The intended cold start: `--list-start-cell` to find where execution
+begins, `--get-cell-list` to see what is in that file, then a normal
+`read --entry` to pull the trace.
+
+`cellsmith read` exit codes: `0` compiled (or a discovery report printed),
+`2` invalid request (unknown field, wrong type, bad `trace_type`) or
+conflicting discovery flags, `5` `entry` matched no cell, or matched more
+than one. Discovery additionally exits `1` on a missing or unparseable
+file.
 
 ## Workspace Layout
 
@@ -331,6 +365,7 @@ src/cellsmith/
 ├── constants.py      # shared constants + template loader
 ├── telemetry.py      # @focal_trace injection, stripping, finalize
 ├── workspace.py      # .cellsmith/ support dirs, backups, patch filing
+├── survey.py         # read discovery: start cells, cell list, tree, raw contents
 ├── reader/           # CellRead subsystem
 │   ├── graph.py      # CellGraph: cells + statically resolved call edges
 │   ├── compiler.py   # mixed-fidelity renderer (full / skeleton / laconic)

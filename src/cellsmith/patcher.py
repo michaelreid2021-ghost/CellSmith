@@ -396,17 +396,40 @@ def apply_revisions(
     """
     changelog_entries = _validate_changelog(data.get("changelog"))
     _check_ambiguity(data, target_dir)
-    # Validate the follow-up read now, so a malformed one cannot surface
-    # only after the patch has already been written.
     post_read = data.get("post_patch_read")
     read_request = ReadRequest.from_dict(post_read) if post_read else None
-    # Instrumentation is opt-in: the CLI flag, or an explicit key on the
-    # payload. Rewriting a caller's functions is never done by default.
     telemetry = bool(data.get("telemetry", False)) or trace
     backed_up_files = set()
     results: List[Tuple[bool, str]] = []
-    touched_files: dict = {}  # Path -> header to re-apply
-    patched_cells: dict = {}  # Path -> {cell_id} touched by this payload
+    touched_files: dict = {}
+    patched_cells: dict = {}
+
+    def _apply_splice_node(rev: dict, target_dir: Path) -> Tuple[bool, str, Optional[Path], List[Path]]:
+        from cellsmith.adapters.dag import DAGValidationError, splice_node
+
+        rel_filename = rev.get("filename", ".")
+        workflow_dir = (target_dir / rel_filename).resolve()
+        after_id = rev.get("after_id")
+        new_id = rev.get("new_id")
+        node_type = rev.get("node_type", "step")
+        code_content = rev.get("code_content")
+        statuses = rev.get("statuses", ["Succeeded"])
+
+        if not new_id:
+            return False, "SPLICE_NODE requires 'new_id' to be specified.", None, []
+
+        try:
+            created_path, modified_paths = splice_node(
+                target_dir=workflow_dir,
+                after_id=after_id,
+                new_id=new_id,
+                node_type=node_type,
+                raw_content=code_content,
+                statuses=statuses,
+            )
+            return True, f"spliced {new_id} into {workflow_dir.name} -> {created_path.name}", created_path, modified_paths
+        except (ValueError, FileNotFoundError, DAGValidationError) as err:
+            return False, str(err), None, []
 
     def _ensure_backup(filepath: Path):
         if filepath not in backed_up_files:
@@ -451,6 +474,7 @@ def apply_revisions(
         "FILE_MOVE": "File Move",
         "ARCHIVE": "Archive",
         "FILE_DELETE": "File Delete",
+        "SPLICE_NODE": "Splice Node",
     }
 
     revisions = data.get("revisions", [])
@@ -469,11 +493,6 @@ def apply_revisions(
         target_file = target_dir / filename
 
         if rev_type in ("ARCHIVE", "FILE_DELETE"):
-            # Both land in the archive. FILE_DELETE exists so an agent can use
-            # the verb it means; the file leaves the working tree either way,
-            # and git will report it deleted at the next commit. Keeping the
-            # content lets a delete be undone between commits, which git
-            # alone cannot do without discarding everything since the last one.
             verb = "archived" if rev_type == "ARCHIVE" else "deleted"
             if not target_file.exists():
                 _fail(label, f"cannot {verb[:-1]} {filename}: file does not exist.")
@@ -496,6 +515,19 @@ def apply_revisions(
             new_target.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(target_file, new_target)
             _ok(label, f"moved {filename} to {new_filename}")
+            continue
+
+        if rev_type == "SPLICE_NODE":
+            ok, msg, created_path, modified_paths = _apply_splice_node(rev, target_dir)
+            if ok:
+                if created_path:
+                    _touch(created_path)
+                for p in modified_paths:
+                    if p.is_file():
+                        _touch(p)
+                _ok(label, msg)
+            else:
+                _fail(label, msg)
             continue
 
         is_new_file = not target_file.exists()
@@ -521,7 +553,6 @@ def apply_revisions(
             with open(target_file, "r", encoding="utf-8") as f:
                 lines = f.readlines()
 
-            # Resolve marker: support paired :start target or fallback to legacy single marker
             marker = f"# %% [{cell_id}]"
             if not marker.endswith(":start]") and not marker.endswith(":end]"):
                 start_marker = f"# %% [{cell_id}:start]"
@@ -549,8 +580,6 @@ def apply_revisions(
                 ))
                 continue
 
-            # Fallback for legacy single-marker cells (e.g. # %% [module:init:41]):
-            # Check if dangling top-level imports/code precede this marker without an intervening cell
             if not is_paired and start_idx > 0:
                 rewind_idx = start_idx - 1
                 while rewind_idx >= 0:
@@ -650,7 +679,7 @@ def apply_revisions(
                 import yaml
                 yaml.safe_load(filepath.read_text(encoding="utf-8"))
             except ImportError:
-                pass  # Skip verification if PyYAML isn't installed in this environment
+                pass
             except Exception as e:
                 _fail(label, (
                     f"patched YAML file no longer parses: {e}. Re-emit the "
@@ -673,8 +702,6 @@ def apply_revisions(
     else:
         logging.warning("No operations applied; changelog not recorded.")
 
-    # File the payload away once it has been applied. A rejected payload is
-    # left where it is so the agent can fix it in place and retry.
     if any_success and json_file is not None:
         store_patch_file(json_file, target_dir, data.get("patch_name"))
 
@@ -688,26 +715,37 @@ def rollback_revisions(data: dict, target_dir: Path) -> None:
     """Reverts changes applied by a JSON patch."""
     revisions = data.get("revisions", [])
     for rev in revisions:
-        if rev.get("revision_type") in ("ARCHIVE", "FILE_DELETE"):
+        rev_type = rev.get("revision_type")
+        if rev_type in ("ARCHIVE", "FILE_DELETE"):
             original = target_dir / rev["filename"]
             if restore_from_archive(original, target_dir):
                 logging.info(f"Restored from archive (rollback): {original}")
             continue
 
-        if rev.get("revision_type") == "FILE_MOVE":
+        if rev_type == "FILE_MOVE":
             old_file = target_dir / rev["filename"]
             new_file = target_dir / rev.get("new_filename", "")
             if new_file.exists():
                 old_file.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(new_file, old_file)
                 logging.info(f"Reverted FILE_MOVE: {new_file} -> {old_file}")
+            continue
+
+        if rev_type == "SPLICE_NODE":
+            from cellsmith.adapters.dag import unsplice_node
+            rel_filename = rev.get("filename", ".")
+            workflow_dir = (target_dir / rel_filename).resolve()
+            new_id = rev.get("new_id")
+            after_id = rev.get("after_id")
+            if workflow_dir.exists() and new_id:
+                try:
+                    unsplice_node(workflow_dir, new_id=new_id, after_id=after_id)
+                    logging.info(f"Rolled back SPLICE_NODE: removed {new_id} from {workflow_dir.name}")
+                except Exception as e:
+                    logging.warning(f"Failed to rollback SPLICE_NODE for {new_id}: {e}")
+            continue
 
     def _restore_from_backup(target_file: Path) -> bool:
-        """Restore target_file from its most recent backup, rotating the rest down.
-
-        Looks in `.cellsmith/backups/` first, then beside the source file, so
-        backups taken before the support directory existed still roll back.
-        """
         current = backup_path(target_file, target_dir)
         legacy = False
         if not current.exists():
@@ -736,9 +774,6 @@ def rollback_revisions(data: dict, target_dir: Path) -> None:
     artifacts = data.get("artifacts", [])
     for artifact in artifacts:
         target_file = target_dir / artifact["filename"]
-        # If the artifact overwrote a pre-existing file, a backup was taken
-        # at patch time — restore it. Otherwise the artifact was net-new:
-        # delete it.
         if _restore_from_backup(target_file):
             continue
         if target_file.exists():
@@ -747,7 +782,7 @@ def rollback_revisions(data: dict, target_dir: Path) -> None:
 
     for rev in revisions:
         rev_type = rev.get("revision_type")
-        if rev_type in ("FILE_MOVE", "ARCHIVE", "FILE_DELETE"):
+        if rev_type in ("FILE_MOVE", "ARCHIVE", "FILE_DELETE", "SPLICE_NODE"):
             continue
 
         target_file = target_dir / rev["filename"]
@@ -755,10 +790,6 @@ def rollback_revisions(data: dict, target_dir: Path) -> None:
         if _restore_from_backup(target_file):
             continue
 
-        # No backup: the revision created this file from scratch
-        # (FILE_CREATE, or REPLACE on a previously missing path). Undo by
-        # deleting it. CELL_PATCH/CELL_CREATE always back up first, so a
-        # missing backup for those means there's nothing to undo.
         if rev_type in ("FILE_CREATE", "REPLACE") and target_file.exists():
             target_file.unlink()
             logging.info(f"Removed created file (rollback): {target_file}")

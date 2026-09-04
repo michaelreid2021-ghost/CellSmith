@@ -220,3 +220,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+.DS_Store
+**/.DS_Store
+.cellsmith/
+*.txt
+compiled_playbook*.json
+patch
+CHANGELOG.cellsmith.jsonl

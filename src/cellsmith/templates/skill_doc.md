@@ -150,6 +150,37 @@ before any disk writes happen. Accepted entries are appended to
 | `timestamp` | no | ISO-8601 UTC; `cellsmith patch` fills it in at apply time if omitted |
 | `author` | no | Free-form model/agent identifier |
 
+## Orienting — finding files and entry cells (no `cat`, `ls` or `find`)
+
+`read` carries four discovery flags for the questions a trace answers
+later. They are mutually exclusive, take the target dir only, and skip the
+graph build entirely:
+
+```bash
+cellsmith read --list-start-cell .            # probable entry-point cells
+cellsmith read --tree .                       # project file tree
+cellsmith read --get-cell-list auth.py .      # the cells in one supported file
+cellsmith read --get-file-contents docs.md .  # raw text, unsupported types only
+```
+
+- **Do not `cat`, `head`, `tail`, `ls` or `find` anything in this project.**
+  `--get-file-contents` refuses supported types (`.py`, `.yaml`, `.yml`) and
+  points you at the cell-aware tools — that refusal is the design, not an
+  error.
+- `--list-start-cell` ranks probable entry cells from the manifests
+  (`pyproject.toml` console scripts, `setup.cfg`/`setup.py` entry points,
+  `Dockerfile*` ENTRYPOINT/CMD), with a `main.py`/`app.py` fallback, and
+  ends with a ready-to-run `cellsmith read --entry ...` line for the top
+  pick. When nothing resolves it lists the root `.py` files and the
+  non-ignored folders instead.
+- `--tree` is the project in one call — directories as `D path/`, files as
+  `F path`; `.gitignore` and `.ignore` honored at every level, hidden files
+  included, `.git` and `.cellsmith/` skipped.
+- `--get-cell-list` is the table of contents for one supported file:
+  every cell with line spans, plus a suggested entry cell.
+
+Cold start: `--list-start-cell` → `--get-cell-list <file>` → `read --entry`.
+
 ## Reading before you patch — `cellsmith read`
 
 Do not read whole files. `cellsmith read` compiles a **dynamic resolution
