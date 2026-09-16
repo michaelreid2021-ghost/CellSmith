@@ -292,6 +292,7 @@ def unsplice_node(
                         yaml.safe_dump(content, f, sort_keys=False)
 # %% [func:unsplice_node:end]
 
+# %% [module:init:start]
 T_FENCE = chr(39) * 3
 
 NODE_POINTER_HEADER = (
@@ -303,14 +304,112 @@ NODE_POINTER_HEADER = (
     '# %% [ai_schema:end]\n'
 )
 
-NODE_SKILL_DOC_MARKDOWN = (
-    '# CellSmith Workflow DAG Patch Schema\n\n'
-    'This project workflow steps are stored as sequentially numbered .yaml files and directories '    '(e.g. 01_trigger.yaml, 02_action.yaml, 03_scope/).\n'    'Files have been annotated by CellSmith with cell markers.\n\n'    '## Step 1 — probe before patching\n\n'    'Before generating any patch payload, run:\n\n'    + T_FENCE + 'bash\n'    'cellsmith status\n'    + T_FENCE + '\n\n'    '- If it prints available: generate a JSON patch per the schema below and save it as patch.json. '    'Apply with: cellsmith patch patch.json .\n'    '- If it errors: edit the target files directly.\n\n'    '## Step 2 — JSON patch shape\n\n'    + T_FENCE + 'json\n'    '{\n'    '  "revisions": [\n'    '    {\n'    '      "filename": "path/to/workflow_dir",\n'    '      "revision_type": "SPLICE_NODE",\n'    '      "after_id": "01_trigger",\n'    '      "new_id": "enrich_ip",\n'    '      "node_type": "ApiConnection",\n'    '      "code_content": "type: ApiConnection\\ninputs:\\n  body: SigninLogs | where IPAddress == _ip\\n",\n'    '      "statuses": ["Succeeded"]\n'    '    }\n'    '  ],\n'    '  "changelog": [\n'    '    {\n'    '      "change_type": "new_feature",\n'    '      "summary": "Spliced enrich_ip action between trigger and downstream steps."\n'    '    }\n'    '  ]\n'    '}\n'    + T_FENCE + '\n\n'    '### SPLICE_NODE — Topological Step Insertion\n\n'    '- filename (required): Path to the workflow directory containing the numbered steps\n'    '- revision_type (required): SPLICE_NODE\n'    '- after_id (optional): Action ID or folder slug to insert after (omit or null for 01_)\n'    '- new_id (required): Identifier for the new node (e.g. enrich_ip)\n'    '- node_type (optional): Action type (e.g. ApiConnection, Http, Compose, default step)\n'    '- code_content (required): Raw YAML definition of the step\n'    '- statuses (optional): Array of runAfter triggers (default ["Succeeded"])\n\n'    'Automated Behaviors:\n'    '- Shifts all subsequent file prefixes automatically (02_ -> 03_, etc.).\n'    '- Updates runAfter dependencies in downstream sibling steps to point to new_id.\n'    '- Validates DAG acyclicity using Kahn algorithm before writing to disk.\n\n'    '### CELL_PATCH and REPLACE — Modifying Step Contents\n\n'    'To surgically modify keys within an existing YAML step file:\n'    + T_FENCE + 'json\n'    '{\n'    '  "filename": "workflows/02_enrich_ip.yaml",\n'    '  "revision_type": "CELL_PATCH",\n'    '  "cell_id": "top:inputs:start",\n'    '  "code_content": "# %% [top:inputs:start]\\ninputs:\\n  body: SigninLogs | take 100\\n# %% [top:inputs:end]\\n"\n'    '}\n'    + T_FENCE + '\n\n'    'Use REPLACE with plain YAML to rewrite an entire step file.\n\n'    '### changelog[] — BLOCKING GATE\n\n'    'Every payload must include at least one valid changelog entry:\n'    '- change_type: new_feature | correcting_implementation | bug_fix | refactor | schema_migration\n'    '- summary: Concise affirmative sentence describing the final state achieved.\n\n'    '## Step 3 — Hand off the JSON\n\n'    'Apply:\n'    + T_FENCE + 'bash\n'    'cellsmith patch patch.json .\n'    + T_FENCE + '\n\n'    'Rollback:\n'    + T_FENCE + 'bash\n'    'cellsmith rollback patch.json .\n'    + T_FENCE + '\n'
-)
+NODE_SKILL_DOC_MARKDOWN = "\n".join([
+    "# CellSmith Workflow DAG Patch Schema",
+    "",
+    "This project workflow steps are stored as sequentially numbered .yaml files and directories",
+    "(e.g. 01_trigger.yaml, 02_action.yaml, 03_scope/).",
+    "Files have been annotated by CellSmith with cell markers.",
+    "",
+    "## Step 1 — Orientation & The Lexicon",
+    "",
+    "If node IDs look like `A01`, `A02`, this workflow is interned. DO NOT guess what they do:",
+    "1. Read `lexicon.yaml` at the workflow root to understand the high-level narrative and original action names.",
+    "2. **QUALITY GATE:** If any description in `lexicon.yaml` is `<null>`, filling in that missing narrative context is your first priority before altering workflow logic.",
+    "3. Use `cellsmith read --get-cell-list <file> .` to see the available cell markers inside a specific step before patching it.",
+    "",
+    "## Step 2 — probe before patching",
+    "",
+    "Before generating any patch payload, run:",
+    "",
+    "'''bash",
+    "cellsmith status",
+    "'''",
+    "",
+    "- If it prints available: generate a JSON patch per the schema below and save it as patch.json.",
+    "  Apply with: cellsmith patch patch.json .",
+    "- If it errors: edit the target files directly.",
+    "",
+    "## Step 3 — JSON patch shape",
+    "",
+    "'''json",
+    "{",
+    '  "revisions": [',
+    '    {',
+    '      "filename": "path/to/workflow_dir",',
+    '      "revision_type": "SPLICE_NODE",',
+    '      "after_id": "01_trigger",',
+    '      "new_id": "enrich_ip",',
+    '      "node_type": "ApiConnection",',
+    '      "code_content": "type: ApiConnection\\ninputs:\\n  body: SigninLogs | where IPAddress == _ip\\n",',
+    '      "statuses": ["Succeeded"]',
+    '    }',
+    '  ],',
+    '  "changelog": [',
+    '    {',
+    '      "change_type": "new_feature",',
+    '      "summary": "Spliced enrich_ip action between trigger and downstream steps."',
+    '    }',
+    '  ]',
+    "}",
+    "'''",
+    "",
+    "### SPLICE_NODE — Topological Step Insertion",
+    "",
+    "- filename (required): Path to the workflow directory containing the numbered steps",
+    "- revision_type (required): SPLICE_NODE",
+    "- after_id (optional): Action ID or folder slug to insert after (omit or null for 01_)",
+    "- new_id (required): Identifier for the new node (e.g. enrich_ip, or A05)",
+    "- node_type (optional): Action type (e.g. ApiConnection, Http, Compose, default step)",
+    "- code_content (required): Raw YAML definition of the step",
+    '- statuses (optional): Array of runAfter triggers (default ["Succeeded"])',
+    "",
+    "Automated Behaviors:",
+    "- Shifts all subsequent file prefixes automatically (02_ -> 03_, etc.).",
+    "- Updates runAfter dependencies in downstream sibling steps to point to new_id.",
+    "- Validates DAG acyclicity using Kahn algorithm before writing to disk.",
+    "",
+    "### CELL_PATCH and REPLACE — Modifying Step Contents",
+    "",
+    "To surgically modify keys within an existing YAML step file:",
+    "'''json",
+    "{",
+    '  "filename": "workflows/02_enrich_ip.yaml",',
+    '  "revision_type": "CELL_PATCH",',
+    '  "cell_id": "top:inputs:start",',
+    '  "code_content": "# %% [top:inputs:start]\\ninputs:\\n  body: SigninLogs | take 100\\n# %% [top:inputs:end]\\n"',
+    "}",
+    "'''",
+    "",
+    "Use REPLACE with plain YAML to rewrite an entire step file, or to modify `lexicon.yaml`.",
+    "Note on Compound Nodes: Scopes, Loops, and Switches are represented as directories. Their structural metadata lives in a `config.yaml` file inside that directory.",
+    "",
+    "### changelog[] — BLOCKING GATE",
+    "",
+    "Every payload must include at least one valid changelog entry:",
+    "- change_type: new_feature | correcting_implementation | bug_fix | refactor | schema_migration",
+    "- summary: Concise affirmative sentence describing the final state achieved.",
+    "",
+    "## Step 4 — Hand off the JSON",
+    "",
+    "Apply:",
+    "'''bash",
+    "cellsmith patch patch.json .",
+    "'''",
+    "",
+    "Rollback:",
+    "'''bash",
+    "cellsmith rollback patch.json .",
+    "'''",
+    ""
+])
+# %% [module:init:end]
 
+# %% [func:write_node_skill_doc:start]
 def write_node_skill_doc(project_root: Path) -> Path:
     from cellsmith.constants import SKILL_DOC_FILENAME
     project_root.mkdir(parents=True, exist_ok=True)
     path = project_root / SKILL_DOC_FILENAME
     path.write_text(NODE_SKILL_DOC_MARKDOWN, encoding='utf-8')
     return path
+# %% [func:write_node_skill_doc:end]

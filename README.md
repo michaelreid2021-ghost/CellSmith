@@ -302,7 +302,6 @@ Notes:
 * Local capture installs one shared trace function. It is skipped when a debugger, profiler, or coverage tool already holds the trace slot, in which case locals is empty and everything else is still recorded.  
 * Nested functions are never wrapped. They belong to their parent's cell.  
 * cellsmith finalize must be run before committing. It removes every @focal\_trace decorator and the import preamble.
-
 ## **Project Layout**
 
 Plaintext  

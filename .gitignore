@@ -1,3 +1,7 @@
+
+CELLSMITH_PATCH_SCHEMA.md
+compiled_migration.json
+workflows/
 # CellSmith patch backups (CHANGELOG.cellsmith.jsonl is intentionally tracked)
 *.bak
 previous_patches/
