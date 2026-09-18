@@ -1,0 +1,37 @@
+name: restore-readme
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.cellsmith-restore/**'
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: docs/adapters-readme
+      - name: Assemble README from b64 chunks
+        run: |
+          python3 << 'EOF'
+          import base64, pathlib, glob
+          parts = sorted(glob.glob('.cellsmith-restore/readme_b64_*.txt'))
+          assert parts, 'no chunks'
+          data = ''.join(pathlib.Path(p).read_text() for p in parts)
+          pathlib.Path('README.md').write_bytes(base64.b64decode(data))
+          pathlib.Path('src/cellsmith/adapters').mkdir(parents=True, exist_ok=True)
+          init = pathlib.Path('src/cellsmith/adapters/__init__.py')
+          if not init.exists():
+              init.write_text('')
+          print('README bytes', pathlib.Path('README.md').stat().st_size)
+          EOF
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md src/cellsmith/adapters/__init__.py
+          git diff --cached --quiet && echo "No changes" && exit 0
+          git commit -m "docs: restore full README with adapters section"
+          git push origin HEAD:docs/adapters-readme
