@@ -1,1 +1,1 @@
-@/workspace/README_OUT.md
+{{file:/workspace/README_OUT.md}}
