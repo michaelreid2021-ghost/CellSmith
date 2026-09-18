@@ -362,7 +362,7 @@ Notes:
 * The decorator is written above the cell's :start marker, so it sits outside the cell. A later CELL\_PATCH replaces :start through :end and leaves the instrumentation in place; the agent keeps emitting pure logic.  
 * Local capture installs one shared trace function. It is skipped when a debugger, profiler, or coverage tool already holds the trace slot, in which case locals is empty and everything else is still recorded.  
 * Nested functions are never wrapped. They belong to their parent's cell.  
-* cellsmith finalize must be run before committinc. It removes every @focal\_trace decorator and the import preamble.
+* cellsmith finalize must be run before committing. It removes every @focal\_trace decorator and the import preamble.
 ## **Project Layout**
 
 Plaintext  
@@ -379,7 +379,7 @@ src/cellsmith/
 ├── adapters/         \# workflow conversions and graph node manipulation  
 │   ├── dag.py        \# DAG verification, SPLICE_NODE, sibling rewiring  
 │   ├── lexicon.py    \# action-name interning / rehydration + lexicon.yaml  
-│   ├── logic\_app.py  \# Logic App JSON \<-\> numbered YAML converter  
+│   └── logic\_app.py  \# Logic App JSON \<-\> numbered YAML converter  
 ├── reader/           \# CellRead subsystem  
 │   ├── graph.py      \# CellGraph: cells \+ statically resolved call edges  
 │   ├── compiler.py   \# mixed-fidelity renderer (full / skeleton / laconic)  
