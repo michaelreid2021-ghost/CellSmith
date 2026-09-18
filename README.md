@@ -14,6 +14,7 @@ It parses the AST, injects non-destructive Jupyter-style markers, validates patc
 * **Dynamic resolution context** — cellsmith read renders a call-graph slice at three fidelities: full code on the execution trace, signature-and-docstring skeletons beyond it, one-line summaries further out. Bounded by a character budget applied at cell boundaries. Four discovery flags (--list-start-cell, \--tree, \--get-cell-list, \--get-file-contents) answer orientation questions so agents never reach for cat, ls or find.  
 * **Unambiguous targeting** — A cell\_id must resolve to exactly one marker. Duplicate markers are rejected with exit code 4 before any write. cellsmith reannotate regenerates markers from the AST.  
 * **Ephemeral focal telemetry** — patch \--trace wraps the patched cells in a @focal\_trace decorator that writes one JSON record per call to .agents/logs/focal\_session.jsonl. cellsmith finalize removes it again.  
+* **Workflow DAG adapters** — Logic App / playbook JSON ↔ numbered YAML trees, optional lexicon interning (`A001`…), `annotate-node`, and surgical `SPLICE_NODE` insertion with dependency rewiring.
 * **Safety defaults** — Automatic versioned backups, post-patch syntax validation, and atomic rollback.
 
 ## **Installation**
@@ -146,39 +147,99 @@ cellsmith annotate-agent is intended for multi-file agent sessions:
 
 ## **Workflow DAGs & Adapters**
 
-CellSmith supports workflow graph engineering—such as Azure Logic Apps—by converting flat monolithic JSON representations into human- and agent-readable numbered YAML file trees.
+CellSmith’s second lane is **workflow graph engineering**: turn a monolithic Logic App / playbook JSON into a topologically ordered tree of numbered YAML steps that humans and agents can read, splice, and reassemble with round-trip fidelity.
 
-### **Logic App Conversion**
+The adapter code lives under `src/cellsmith/adapters/`:
 
-The adapter layer handles bidirectional conversion between Logic App JSON workflow definitions and topologically ordered YAML action trees:
+| Module | Role |
+| :---- | :---- |
+| `logic_app.py` | Pack/unpack Logic App JSON ↔ numbered YAML tree |
+| `lexicon.py` | Intern long action names to short tokens (`A001`…) and rehydrate on pack |
+| `dag.py` | `SPLICE_NODE` / unsplice, Kahn cycle checks, `annotate-node` skill doc |
 
-* Topologically sorts actions into numbered step directories based on runAfter dependencies.  
-* Deconstructs and reconstructs root workflow envelopes, metadata, Scopes, If/Else branches, and Switch containers with full round-trip fidelity.
+### **Logic App pack / unpack**
 
-### **Workflow Node Annotation (annotate-node)**
+Bidirectional conversion between a Logic App (or similar) JSON definition and a directory of numbered steps:
 
-Bash  
+* Topologically sorts actions from `runAfter` into `01_…`, `02_…` files and folders.
+* Compound nodes become directories with `config.yaml`:
+  * **Scope / Foreach / Until** — nested actions stay inside the folder
+  * **If** — `true/` and `false/` branches
+  * **Switch** — `cases/<case>/` plus `default/`
+* Writes `playbook_config.yaml` for the envelope (`$schema`, triggers, parameters, wrapper metadata).
+
+Standalone converter (`src/cellsmith/adapters/logic_app.py`):
+
+```bash
+# JSON → numbered YAML tree
+python -m cellsmith.adapters.logic_app unpack playbook.json workflows/my_flow
+
+# Same, but intern action names + build lexicon.yaml (token compression)
+python -m cellsmith.adapters.logic_app unpack playbook.json workflows/my_flow --intern
+
+# Numbered YAML tree → JSON
+python -m cellsmith.adapters.logic_app pack workflows/my_flow playbook.out.json
+```
+
+Requires an installed package (`pip install -e .`). `pack` / `unpack` live on that module’s CLI; the main `cellsmith` entrypoint covers `annotate-node`, `patch`, and `SPLICE_NODE`.
+
+With `--intern`, unpack prints a compression report (original vs interned non-whitespace length, chars saved, lexicon entry count).
+
+### **Lexicon (action-name interning)**
+
+When `--intern` is used, CellSmith:
+
+1. Maps each action name to a short id (`A001`, `A002`, …).
+2. Rewrites action keys, `runAfter` edges, and expression strings such as `@body('…')` / `@outputs('…')` to the interned ids.
+3. Writes `lexicon.yaml` at the workflow root: id → original `name` + `description` (or `<null>` if missing).
+
+**Agent quality gate:** if any description in `lexicon.yaml` is `<null>`, fill that narrative context before changing workflow logic. Do not guess what `A01` means — read the lexicon first.
+
+On pack, descriptions are injected back and ids are rehydrated to the original action names.
+
+### **Annotate workflow nodes**
+
+```bash
 cellsmith annotate-node workflows/
+```
 
-Inserts NODE\_POINTER\_HEADER on workflow YAML files.  
-Generates a DAG-specific skill doc (SKILL\_DOC.md) containing node manipulation rules and schemas at the project root.
+* Adds node pointer headers on workflow YAML.
+* Writes a DAG-specific skill doc (`SKILL_DOC.md` by default) at the project root with SPLICE_NODE rules, lexicon orientation, and the changelog gate.
 
-### **Node Splicing (SPLICE\_NODE)**
+### **Node splicing (`SPLICE_NODE`)**
 
-Workflow revisions support surgical insertion without manual index rewrites:
+Insert a step without hand-editing every downstream prefix:
 
-JSON  
-{  
-  "filename": "workflows/steps/02\_transform.yaml",  
-  "revision\_type": "SPLICE\_NODE",  
-  "after\_id": "01\_validate",  
-  "code\_content": "name: transform\\ntype: Scope\\n..."  
+```json
+{
+  "revisions": [
+    {
+      "filename": "workflows/my_flow",
+      "revision_type": "SPLICE_NODE",
+      "after_id": "01_validate",
+      "new_id": "enrich_ip",
+      "node_type": "ApiConnection",
+      "code_content": "type: ApiConnection\ninputs:\n  body: SigninLogs | where IPAddress == _ip\n",
+      "statuses": ["Succeeded"]
+    }
+  ],
+  "changelog": [
+    {
+      "change_type": "new_feature",
+      "summary": "Spliced enrich_ip between validate and downstream steps."
+    }
+  ]
 }
+```
 
-* Automatically shifts downstream sibling directory prefixes.  
-* Rewires dependency edges and updates sibling action references.  
-* Registers all touched siblings for post-patch re-annotation and syntax verification.  
-* Full rollback supported via cellsmith rollback.
+Automated behaviors:
+
+* Shifts subsequent file/dir prefixes (`02_` → `03_`, …).
+* Rewires `runAfter` on the next siblings to point at `new_id`.
+* Validates the DAG is acyclic (Kahn) before finishing.
+* Full rollback via `cellsmith rollback`.
+
+Compound nodes (scopes, loops, switches) are directories; their structural metadata lives in `config.yaml` inside that directory. Use `CELL_PATCH` / `REPLACE` to edit step contents or `lexicon.yaml`.
 
 ## **Safety**
 
@@ -316,7 +377,8 @@ src/cellsmith/
 ├── workspace.py      \# .cellsmith/ support dirs, backups, patch filing  
 ├── survey.py         \# read discovery: start cells, cell list, tree, raw contents  
 ├── adapters/         \# workflow conversions and graph node manipulation  
-│   ├── dag.py        \# DAG verification, SPLICE\_NODE logic, sibling rewiring  
+│   ├── dag.py        \# DAG verification, SPLICE_NODE, sibling rewiring  
+│   ├── lexicon.py    \# action-name interning / rehydration + lexicon.yaml  
 │   └── logic\_app.py  \# Logic App JSON \<-\> numbered YAML converter  
 ├── reader/           \# CellRead subsystem  
 │   ├── graph.py      \# CellGraph: cells \+ statically resolved call edges  
