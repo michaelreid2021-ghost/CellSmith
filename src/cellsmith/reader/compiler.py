@@ -1,11 +1,3 @@
-# filepath: src/cellsmith/reader/compiler.py
-# %% [ai_schema:pointer]
-# CellSmith workflow DAG node. Cells marked with `# %% [<cell_id>]`.
-# To modify or splice: load `CELLSMITH_PATCH_SCHEMA.md` at the project root
-# for the workflow DAG patch schema (incl. SPLICE_NODE and changelog rules).
-# Run `cellsmith status` first — if it errors, edit files directly.
-# %% [ai_schema:end]
-# %% [module:init:start]
 """Render a slice of the CellGraph at mixed fidelity.
 
 Three tiers, chosen by distance from the entry point:
@@ -22,9 +14,7 @@ Cells are grouped under their file, each file preceded by its `# filepath:`
 header and its imports cell, so that what the agent reads stays syntactically
 coherent even though it is assembled from disjoint regions.
 """
-# %% [module:init:end]
 
-# %% [imports:start]
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
@@ -32,29 +22,23 @@ from cellsmith.constants import load_template
 from cellsmith.reader.budget import Budget
 from cellsmith.reader.graph import CellGraph, CellNode
 from cellsmith.reader.schema import ReadRequest
-# %% [imports:end]
 
-# %% [module:init:2:start]
 FULL, SKELETON, LACONIC = "full", "skeleton", "laconic"
 
 TRUNCATION_NOTE = (
     "# [TRACE_TRUNCATED] - Exceeded read budget.\n"
     "# Execute CellRead with a new entry to expand if required.\n"
 )
-# %% [module:init:2:end]
 
 
-# %% [func:_dedent_unit:start]
 def _dedent_unit(source: str) -> str:
     """The indentation of a cell's first non-blank line."""
     for line in source.splitlines():
         if line.strip():
             return line[: len(line) - len(line.lstrip())]
     return ""
-# %% [func:_dedent_unit:end]
 
 
-# %% [func:_strip_docstring:start]
 def _strip_docstring(node: CellNode) -> str:
     """The cell's source with its docstring lines removed."""
     if not node.doc_span:
@@ -66,10 +50,8 @@ def _strip_docstring(node: CellNode) -> str:
     if lo < 0 or hi > len(lines):
         return node.source
     return "".join(lines[:lo] + lines[hi:])
-# %% [func:_strip_docstring:end]
 
 
-# %% [func:render_full:start]
 def render_full(node: CellNode) -> str:
     """Complete code, wrapped in its cell markers so it can be patched."""
     body = _strip_docstring(node).rstrip("\n")
@@ -78,10 +60,8 @@ def render_full(node: CellNode) -> str:
         f"{body}\n"
         f"# %% [{node.cell_id}:end]\n"
     )
-# %% [func:render_full:end]
 
 
-# %% [func:render_skeleton:start]
 def render_skeleton(node: CellNode) -> str:
     """Signature and docstring, body elided."""
     if not node.signature:
@@ -94,10 +74,8 @@ def render_skeleton(node: CellNode) -> str:
         out.append(f'{indent}    """{summary}"""\n')
     out.append(f"{indent}    ...\n")
     return "".join(out)
-# %% [func:render_skeleton:end]
 
 
-# %% [func:render_laconic:start]
 def render_laconic(node: CellNode, depends_on: Optional[List[str]] = None) -> str:
     """A single line: what the cell is, and what it leans on."""
     label = node.signature.strip() if node.signature else node.cell_id
@@ -106,10 +84,8 @@ def render_laconic(node: CellNode, depends_on: Optional[List[str]] = None) -> st
     if depends_on:
         line += f" | Depends on: {', '.join(sorted(depends_on)[:6])}"
     return line + "\n"
-# %% [func:render_laconic:end]
 
 
-# %% [func:render_truncated:start]
 def render_truncated(node: CellNode) -> str:
     """A breadcrumb standing in for a cell that did not fit the budget."""
     indent = _dedent_unit(node.source)
@@ -120,24 +96,19 @@ def render_truncated(node: CellNode) -> str:
     if node.signature:
         out.append(f"{indent}    pass\n")
     return "".join(out)
-# %% [func:render_truncated:end]
 
 
-# %% [class:ReadCompiler:start]
 class ReadCompiler:
     """Turns a `ReadRequest` into the text an agent should read."""
 
-# %% [method:ReadCompiler.__init__:start]
     def __init__(self, graph: CellGraph, request: ReadRequest):
         self.graph = graph
         self.request = request
         self.budget = Budget(max_characters=request.max_characters)
         self.fidelity: Dict[str, str] = {}
         self.truncated: List[str] = []
-# %% [method:ReadCompiler.__init__:end]
 
     # ------------------------------------------------------------- planning
-# %% [method:ReadCompiler._pinned_keys:start]
     def _pinned_keys(self) -> Set[str]:
         pinned = set()
         for raw in self.request.trace_keep:
@@ -146,9 +117,7 @@ class ReadCompiler:
             except KeyError:
                 continue
         return pinned
-# %% [method:ReadCompiler._pinned_keys:end]
 
-# %% [method:ReadCompiler.plan:start]
     def plan(self) -> str:
         """Assign a fidelity to every reachable cell. Returns the entry key."""
         entry_key = self.graph.resolve_entry(self.request.entry)
@@ -195,10 +164,8 @@ class ReadCompiler:
             self.fidelity[key] = FULL
 
         return entry_key
-# %% [method:ReadCompiler.plan:end]
 
     # ------------------------------------------------------------ rendering
-# %% [method:ReadCompiler._class_shell:start]
     def _class_shell(self, node: CellNode) -> str:
         """A class cell without its methods, which are cells in their own right.
 
@@ -213,9 +180,8 @@ class ReadCompiler:
             and other.key != node.key
             and other.start > node.start
             and other.end <= node.end
+            and other.kind != "class_header"
         ]
-        if not nested:
-            return _strip_docstring(node).rstrip("\n")
 
         # Work from the original source so the recorded line spans line up;
         # the docstring is dropped below, alongside the member cells.
@@ -232,10 +198,14 @@ class ReadCompiler:
         kept = [line for i, line in enumerate(lines) if i not in drop]
         indent = _dedent_unit(node.source)
         body = "".join(kept).rstrip("\n")
-        return f"{body}\n{indent}    # ... {len(nested)} member cell(s) rendered separately"
-# %% [method:ReadCompiler._class_shell:end]
 
-# %% [method:ReadCompiler._render_cell:start]
+        header_start = f"# %% [class_header:{node.name}:start]\n"
+        header_end = f"\n# %% [class_header:{node.name}:end]"
+
+        if nested:
+            return f"{header_start}{body}{header_end}\n{indent}    # ... {len(nested)} member cell(s) rendered separately"
+        return f"{header_start}{body}{header_end}"
+
     def _render_cell(self, key: str, node: CellNode, pinned: bool) -> str:
         tier = self.fidelity[key]
         if tier == FULL and node.kind == "class":
@@ -268,9 +238,7 @@ class ReadCompiler:
 
         self.truncated.append(key)
         return render_truncated(node)
-# %% [method:ReadCompiler._render_cell:end]
 
-# %% [method:ReadCompiler.compile:start]
     def compile(self) -> str:
         """Produce the full read payload."""
         entry_key = self.plan()
@@ -334,12 +302,8 @@ class ReadCompiler:
             for key in cut:
                 chunks.append(f"#   {key}\n")
         return "".join(chunks)
-# %% [method:ReadCompiler.compile:end]
-# %% [class:ReadCompiler:end]
 
 
-# %% [func:compile_read:start]
 def compile_read(graph: CellGraph, request: ReadRequest) -> str:
     """Compile `request` against `graph` and return the rendered context."""
     return ReadCompiler(graph, request).compile()
-# %% [func:compile_read:end]

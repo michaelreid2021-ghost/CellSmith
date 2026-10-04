@@ -1,11 +1,3 @@
-# filepath: src/cellsmith/annotator.py
-# %% [ai_schema:pointer]
-# CellSmith workflow DAG node. Cells marked with `# %% [<cell_id>]`.
-# To modify or splice: load `CELLSMITH_PATCH_SCHEMA.md` at the project root
-# for the workflow DAG patch schema (incl. SPLICE_NODE and changelog rules).
-# Run `cellsmith status` first — if it errors, edit files directly.
-# %% [ai_schema:end]
-# %% [module:init:start]
 """AST/YAML traversal: turn a source file into cell-delimited regions.
 
 `CellAnnotator` walks a Python AST and records the `# %% [...]` markers a file
@@ -17,9 +9,7 @@ header and markers first, then re-marked from the AST. Markers are derived
 data, so topping up an already-annotated file could emit a second marker with
 an id that already exists — leaving two cells answering to one `cell_id`.
 """
-# %% [module:init:end]
 
-# %% [imports:start]
 import ast
 import logging
 import re
@@ -28,10 +18,8 @@ from typing import List, Tuple
 
 from cellsmith.constants import FULL_SCHEMA_HEADER, POINTER_HEADER, SUPPORTED_SUFFIXES
 from cellsmith.files import strip_lines
-# %% [imports:end]
 
 
-# %% [func:is_main_guard:start]
 def is_main_guard(stmt: ast.stmt) -> bool:
     """True for a top-level `if __name__ == '__main__':` guard."""
     return (
@@ -41,31 +29,41 @@ def is_main_guard(stmt: ast.stmt) -> bool:
         and stmt.test.left.id == "__name__"
         and any(isinstance(op, ast.Eq) for op in stmt.test.ops)
     )
-# %% [func:is_main_guard:end]
 
 
-# %% [class:CellAnnotator:start]
 class CellAnnotator(ast.NodeVisitor):
-# %% [method:CellAnnotator.__init__:start]
     def __init__(self):
         self.insertions: List[Tuple[int, str]] = []
         self.current_class: str = ""
         self.function_depth: int = 0
-# %% [method:CellAnnotator.__init__:end]
 
-# %% [method:CellAnnotator.visit_ClassDef:start]
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         base_id = f"class:{node.name}"
+        header_id = f"class_header:{node.name}"
+
         self.insertions.append((node.lineno, f"# %% [{base_id}:start]\n"))
+        self.insertions.append((node.lineno, f"# %% [{header_id}:start]\n"))
+
+        FUNC_CLASS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+        first_method_line = None
+        for stmt in node.body:
+            if isinstance(stmt, FUNC_CLASS):
+                first_method_line = stmt.lineno
+                break
+
+        if first_method_line:
+            self.insertions.append((first_method_line, f"# %% [{header_id}:end]\n"))
+        elif hasattr(node, "end_lineno") and node.end_lineno:
+            self.insertions.append((node.end_lineno + 1, f"# %% [{header_id}:end]\n"))
+
         if hasattr(node, "end_lineno") and node.end_lineno:
             self.insertions.append((node.end_lineno + 1, f"# %% [{base_id}:end]\n"))
+
         previous_class = self.current_class
         self.current_class = node.name
         self.generic_visit(node)
         self.current_class = previous_class
-# %% [method:CellAnnotator.visit_ClassDef:end]
 
-# %% [method:CellAnnotator.visit_FunctionDef:start]
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         if self.function_depth == 0:
             if self.current_class:
@@ -78,14 +76,10 @@ class CellAnnotator(ast.NodeVisitor):
         self.function_depth += 1
         self.generic_visit(node)
         self.function_depth -= 1
-# %% [method:CellAnnotator.visit_FunctionDef:end]
 
-# %% [method:CellAnnotator.visit_AsyncFunctionDef:start]
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         self.visit_FunctionDef(node)
-# %% [method:CellAnnotator.visit_AsyncFunctionDef:end]
 
-# %% [method:CellAnnotator.visit_Module:start]
     def visit_Module(self, node: ast.Module) -> None:
         """Mark top-level statements into paired, contiguous cells.
 
@@ -156,11 +150,8 @@ class CellAnnotator(ast.NodeVisitor):
                 group_end_line = getattr(stmt, "end_lineno", stmt.lineno)
 
         _flush_group()
-# %% [method:CellAnnotator.visit_Module:end]
-# %% [class:CellAnnotator:end]
 
 
-# %% [func:_knob_ranges:start]
 def _knob_ranges(lines: List[str]) -> List[Tuple[int, int]]:
     """1-based line ranges of user-authored `# %% [knobs:...]` blocks."""
     ranges = []
@@ -175,10 +166,8 @@ def _knob_ranges(lines: List[str]) -> List[Tuple[int, int]]:
             ranges.append((start_line, i + 1))
             in_knob = False
     return ranges
-# %% [func:_knob_ranges:end]
 
 
-# %% [func:plan_insertions:start]
 def plan_insertions(lines: List[str], suffix: str) -> List[Tuple[int, str]]:
     """Return the `(lineno, marker)` pairs a clean annotation of `lines` needs.
 
@@ -222,10 +211,8 @@ def plan_insertions(lines: List[str], suffix: str) -> List[Tuple[int, str]]:
         for lineno, marker in raw_insertions
         if not any(start <= lineno <= end for start, end in knob_ranges)
     ]
-# %% [func:plan_insertions:end]
 
 
-# %% [func:annotate_file:start]
 def annotate_file(filepath: Path, header: str = FULL_SCHEMA_HEADER) -> None:
     """Regenerate `filepath`'s cell markers and schema header from its AST.
 
@@ -281,4 +268,3 @@ def annotate_file(filepath: Path, header: str = FULL_SCHEMA_HEADER) -> None:
 
     cells = sum(1 for _, m in insertions if ":start]" in m)
     logging.info(f"Annotated {filepath} with {cells} cell(s).")
-# %% [func:annotate_file:end]
