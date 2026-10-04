@@ -1,18 +1,29 @@
 # filepath: src/cellsmith/__init__.py
-# %% [ai_schema:pointer]
-# CellSmith workflow DAG node. Cells marked with `# %% [<cell_id>]`.
-# To modify or splice: load `CELLSMITH_PATCH_SCHEMA.md` at the project root
-# for the workflow DAG patch schema (incl. SPLICE_NODE and changelog rules).
-# Run `cellsmith status` first — if it errors, edit files directly.
-# %% [ai_schema:end]
-# %% [module:init:start]
-"""CellSmith — AST-based cell-aware code patcher for LLM-driven Python edits."""
+"""CellSmith — AST-based cell-aware code patcher for LLM-driven Python edits.
+
+CellSmith annotates Python source with stable AST-derived cell markers so language
+models can return compact JSON patches targeting individual functions, methods, classes,
+or module sections instead of regenerating entire files.
+
+It parses the AST, injects non-destructive Jupyter-style markers, validates patches,
+manages versioned backups, and supports one-command rollback.
+"""
 
 __version__ = "0.1.0"
-# %% [module:init:end]
 
-# %% [imports:start]
+# %% [module:public_api:start]
 from cellsmith.annotator import CellAnnotator, annotate_file, plan_insertions
+from cellsmith.adapters.base import (
+    BaseWorkflowAdapter,
+    DagNode,
+    DagGraph,
+    Metadata,
+)
+from cellsmith.adapters.logic_app import (
+    LogicAppAdapter,
+    unpack_playbook,
+    pack_playbook,
+)
 from cellsmith.constants import (
     CHANGELOG_FILE,
     FULL_SCHEMA_HEADER,
@@ -29,28 +40,56 @@ from cellsmith.patcher import (
     rollback_revisions,
     write_skill_doc,
 )
-# %% [imports:end]
+from cellsmith.reader import build_graph
+from cellsmith.survey import (
+    cell_list_report,
+    file_contents_report,
+    start_cell_report,
+    tree_report,
+)
+from cellsmith.telemetry import (
+    AGENTS_DIR,
+    ensure_runtime,
+    finalize_tree,
+    instrument_file,
+    log_path,
+)
+from cellsmith.workspace import filed_patches, find_patch_file
 
-# %% [module:init:2:start]
+# %% [module:adapter_discovery:start]
+from cellsmith.registry import load_all_adapters
+# %% [module:adapter_discovery:end]
+
 __all__ = [
+    # Core
     "__version__",
     "CellAnnotator",
     "annotate_file",
     "plan_insertions",
-    "reannotate_file",
-    "AmbiguousMarkerError",
     "apply_revisions",
+    "reannotate_file",
     "rollback_revisions",
     "write_skill_doc",
     "create_backup",
     "iter_target_files",
     "strip_file",
     "strip_lines",
+    # Protocol
+    "BaseWorkflowAdapter",
+    "DagNode",
+    "DagGraph",
+    "Metadata",
+    # Adapters
+    "LogicAppAdapter",
+    "unpack_playbook",
+    "pack_playbook",
+    # Discovery
+    "load_all_adapters",
+    # Constants & utilities
     "CHANGELOG_FILE",
-    "SKILL_DOC_FILENAME",
-    "VALID_CHANGE_TYPES",
     "FULL_SCHEMA_HEADER",
     "POINTER_HEADER",
+    "SKILL_DOC_FILENAME",
     "SKILL_DOC_MARKDOWN",
+    "VALID_CHANGE_TYPES",
 ]
-# %% [module:init:2:end]

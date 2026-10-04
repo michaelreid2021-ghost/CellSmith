@@ -13,6 +13,9 @@ import shutil
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 import yaml
+
+COMPOUND_TYPES = ("scope", "foreach", "until")
+
 # %% [imports:end]
 
 

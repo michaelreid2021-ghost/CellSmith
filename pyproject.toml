@@ -24,6 +24,10 @@ classifiers = [
 [project.scripts]
 cellsmith = "cellsmith.cli:main"
 
+# Entry points for adapter discovery via importlib.metadata
+[project.entry-points."cellsmith.adapters"]
+logic_app = "cellsmith.adapters.logic_app:LogicAppAdapter"
+
 [project.urls]
 Repository = "https://github.com/michaelreid2021-ghost/CellSmith"
 
